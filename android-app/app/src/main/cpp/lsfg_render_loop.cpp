@@ -252,12 +252,12 @@ struct State {
 
 
 
-    // Unbounded FIFO for captured frames. Every capture is retained until
-    // processed; there is no queue trimming, latest-frame replacement, or
-    // dropped input. When the measured generation load is too high, only the
-    // optional interpolation step is bypassed for that capture. The real frame
-    // is still copied and posted first, and generation resumes automatically
-    // when runtime pressure falls.
+    // Bounded realtime queue. A capture queue must never become an unbounded
+    // FIFO: if the worker falls behind, old captures only add latency and pin
+    // AHardwareBuffer references. The worker owns the frame it has popped;
+    // this queue owns only frames that have not started processing.
+    // pushFrame() evicts stale queued captures before admitting the newest one.
+    // This keeps at most one waiting capture and prevents latency/memory growth.
     struct PendingFrame {
         AHardwareBuffer *ahb = nullptr;
         Clock::time_point queuedAt{};
@@ -2906,16 +2906,34 @@ void pushFrame(AHardwareBuffer *ahb, int64_t timestampNs) {
             AHardwareBuffer_release(ahb);
             return;
         }
-        // REAL FRAME FIRST admission policy:
-        // Once a frame is admitted past the input FPS cap above, never drop
-        // it here. If the render worker is already behind, mark this frame
-        // as bypass-only so it can skip expensive generation and reach
-        // present as a REAL frame. The queue is only used for ordering; it
-        // is not allowed to create an ever-growing latency backlog.
-        constexpr size_t kRealtimeBypassQueueDepth = 2;
-        if (g.pendingFrames.size() >= kRealtimeBypassQueueDepth) {
-            forceBypass = true;
+        // REAL-TIME QUEUE CLEANUP:
+        // Never let old captures accumulate while the worker is busy. A queued
+        // AHardwareBuffer holds a reference to a potentially large graphics
+        // allocation, so retaining a backlog is both a latency and memory
+        // pressure problem.
+        //
+        // The frame currently being processed is NOT in pendingFrames and is
+        // therefore never touched here. Only frames still waiting are evicted.
+        // The newest capture is admitted immediately after this cleanup.
+        if (!g.pendingFrames.empty()) {
+            const size_t staleCount = g.pendingFrames.size();
+            for (auto &stale : g.pendingFrames) {
+                if (stale.ahb != nullptr) {
+                    AHardwareBuffer_release(stale.ahb);
+                    stale.ahb = nullptr;
+                }
+            }
+            g.pendingFrames.clear();
+
+            // Do not interpolate across a gap created by dropping queued
+            // captures. The next processed real frame becomes the new anchor.
+            g.pairingResetPending.store(true, std::memory_order_release);
+
+            LOGI("pushFrame: evicted %zu stale queued frame(s)", staleCount);
         }
+
+        // The queue itself is now bounded to one waiting frame.
+        forceBypass = false;
 
         const uint64_t epoch = g.captureEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
         g.pendingFrames.push_back(State::PendingFrame{
