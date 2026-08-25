@@ -287,7 +287,7 @@ void init_crash_reporter(const std::string &crashPath, const std::string &logPat
                         ssize_t r = read(rfd, buf, kKeep);
                         close(rfd);
                         if (r > 0) {
-                            int tfd = open(logPath.c_str(), O_WRONLY | O_TRUNC, 0644);
+                            int tfd = open(logPath.c_str(), O_WRONLY | O_TRUNC);
                             if (tfd >= 0) {
                                 ssize_t w = write(tfd, buf, r);
                                 (void)w;
