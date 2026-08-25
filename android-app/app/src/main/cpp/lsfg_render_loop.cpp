@@ -372,6 +372,10 @@ struct State {
     // current real frame is passed through and generation is skipped for that
     // frame. As the queue drains, generation automatically resumes.
     std::atomic<int64_t> emaGenerationNs{0};
+    // Resolution-aware generation cost. Stored as ns per megapixel so a
+    // 720p/1080p/1440p/4K capture gets a latency estimate appropriate to its
+    // actual workload instead of reusing a fixed time from another size.
+    std::atomic<int64_t> emaGenerationNsPerMp{0};
     std::atomic<int64_t> emaCaptureIntervalNs{0};
     std::atomic<int64_t> lastProcessedCaptureTimestampNs{0};
     std::atomic<uint64_t> dynamicBypassCount{0};
@@ -2033,13 +2037,10 @@ void workerThread() {
         const auto tCopyDone = State::Clock::now();
 
         // Chronological output transaction:
-        //   REAL(previous), GEN(previous,current)..., REAL(current)
-        //
-        // The previous implementation posted REAL(current) before the
-        // interpolation for (previous,current), yielding:
         //   REAL(previous), REAL(current), GEN(previous,current)...
-        // Keep the current REAL pending until this pair's generated outputs
-        // have been published (or generation is skipped/invalidated).
+        // REAL(current) is deliberately published before optional generation.
+        // Generated frames are enhancement work and must never hold the REAL
+        // lane hostage.
         auto postCurrentReal = [&]() -> bool {
             const bool posted = framegenInputsBusy
                 ? blitOutputToWindow(src)
@@ -2089,26 +2090,51 @@ void workerThread() {
             queuedBehind = g.pendingFrames.size();
         }
 
+        const uint64_t framePixels =
+            static_cast<uint64_t>(g.inSlot[newSlot].extent.width) *
+            static_cast<uint64_t>(g.inSlot[newSlot].extent.height);
+        const double frameMp = std::max(0.001, static_cast<double>(framePixels) / 1000000.0);
         const int64_t emaGenerationNs =
             g.emaGenerationNs.load(std::memory_order_relaxed);
+        const int64_t emaGenerationNsPerMp =
+            g.emaGenerationNsPerMp.load(std::memory_order_relaxed);
 
-        // The pressure estimate is entirely measured at runtime. With no
-        // history yet, generation is allowed. Once history exists, queued
-        // generation work is compared against the current source cadence.
+        // Resolution-aware latency model:
+        //   estimated generation = EMA(ns/MP) * current frame MP
+        // Fall back to the absolute EMA until enough samples exist.
+        const int64_t estimatedGenerationNs =
+            emaGenerationNsPerMp > 0
+                ? static_cast<int64_t>(std::max(1.0, frameMp * static_cast<double>(emaGenerationNsPerMp)))
+                : emaGenerationNs;
+
+        // A frame that already spent time waiting in the capture FIFO has less
+        // latency budget left. Generation is optional, so spend only the
+        // remaining budget; never make the REAL frame wait for GEN.
+        const int64_t queueAgeNs = std::max<int64_t>(0,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                frameWorkStartedAt - pendingFrame.queuedAt).count());
+
         bool dynamicBypass = false;
-        if (emaGenerationNs > 0 && captureIntervalNs > 0) {
-            const int64_t queuedWorkNs =
-                static_cast<int64_t>(queuedBehind) * emaGenerationNs;
-            const int64_t latencyBudgetNs =
-                std::max<int64_t>(captureIntervalNs, 1'000'000LL) +
-                std::max<int64_t>(captureIntervalNs, 1'000'000LL) / 2;
+        if (captureIntervalNs > 0) {
+            const int64_t targetBudgetNs =
+                std::max<int64_t>(captureIntervalNs, 1'000'000LL);
+            const int64_t remainingBudgetNs =
+                std::max<int64_t>(0, targetBudgetNs - queueAgeNs);
 
-            // If one generation already costs more than the source cadence,
-            // allow generation only while the queue is empty. If queued work
-            // is accumulating, temporarily bypass until it drains.
+            // Reserve ~35% for real-frame copy/present, capture jitter and
+            // driver variance. The generation lane gets only the remainder.
+            const int64_t generationBudgetNs =
+                (remainingBudgetNs * 65) / 100;
+
+            const int64_t queuedGenerationNs =
+                static_cast<int64_t>(queuedBehind) *
+                std::max<int64_t>(estimatedGenerationNs, 0);
+
             dynamicBypass =
-                (queuedBehind > 0 && emaGenerationNs > captureIntervalNs) ||
-                (queuedWorkNs >= latencyBudgetNs);
+                queuedBehind > 0 ||
+                (estimatedGenerationNs > 0 &&
+                 (estimatedGenerationNs > generationBudgetNs ||
+                  queuedGenerationNs >= remainingBudgetNs));
         }
 
         if (dynamicBypass) {
@@ -2174,14 +2200,20 @@ void workerThread() {
         // after submit still costs queue time and can grow capture latency.
         bool generationPreflightOk = generationAllowed;
         if (generationPreflightOk) {
-            const int64_t genEstimateNs = g.emaGenerationNs.load(std::memory_order_relaxed);
+            const int64_t genEstimateNs = estimatedGenerationNs;
             const int64_t sourceIntervalNs = captureIntervalNs > 0
                 ? captureIntervalNs
                 : 0;
-            const int64_t safetyWindowNs = sourceIntervalNs > 0
-                ? (sourceIntervalNs * 65) / 100
-                : 0;
-            if (genEstimateNs > 0 && safetyWindowNs > 0 && genEstimateNs >= safetyWindowNs) {
+            const int64_t remainingBudgetNs =
+                sourceIntervalNs > queueAgeNs
+                    ? sourceIntervalNs - queueAgeNs
+                    : 0;
+            const int64_t safetyWindowNs =
+                remainingBudgetNs > 0
+                    ? (remainingBudgetNs * 65) / 100
+                    : 0;
+            if (genEstimateNs > 0 &&
+                (safetyWindowNs <= 0 || genEstimateNs > safetyWindowNs)) {
                 generationPreflightOk = false;
             }
             // Never start generation when the queue already contains another
@@ -2212,7 +2244,14 @@ void workerThread() {
         // the generation preflight above to decide whether a generated frame
         // can safely fit between two REAL frames.
 
+        // REAL has absolute priority. Publish the captured frame BEFORE
+        // submitting any optional interpolation work. This removes the old
+        // hidden dependency where REAL(current) sat behind presentContext(),
+        // semaphore setup and/or AI inference.
+        bool realPosted = false;
         if (runFramegen || runAi) {
+            realPosted = postCurrentReal();
+
             const auto generationStartedAt = State::Clock::now();
             std::vector<VkSemaphore> framegenDoneSems;
             std::vector<int> framegenDoneFds;
@@ -2251,7 +2290,6 @@ void workerThread() {
                     // reorder GEN relative to subsequent REAL frames.
                     g.crossDeviceSyncDisabled = true;
                     LOGW("External semaphore FD creation rejected by driver; disabling framegen for REAL-first mode");
-                    postCurrentReal();
                     continue;
                 }
             }
@@ -2283,7 +2321,6 @@ void workerThread() {
                         if (sem != VK_NULL_HANDLE)
                             g.framegenCompletionTickets.push_back({sem, VK_NULL_HANDLE});
                     }
-                    postCurrentReal();
                     continue;
                 }
             }
@@ -2347,7 +2384,6 @@ void workerThread() {
                 // without waiting for waitIdle(). Never make REAL wait for
                 // that fallback. Let the background worker drain the GPU work
                 // and discard its generated outputs.
-                postCurrentReal();
                 g.pairingResetPending.store(true, std::memory_order_release);
                 continue;
             }
@@ -2388,6 +2424,19 @@ void workerThread() {
                     const int64_t next = old <= 0 ? generationNs
                                                   : (old * 7 + generationNs) / 8;
                     g.emaGenerationNs.store(next, std::memory_order_relaxed);
+
+                    const double mp = std::max(
+                        0.001,
+                        (static_cast<double>(g.inSlot[newSlot].extent.width) *
+                         static_cast<double>(g.inSlot[newSlot].extent.height)) /
+                        1000000.0);
+                    const int64_t nsPerMp =
+                        static_cast<int64_t>(std::max(1.0, static_cast<double>(generationNs) / mp));
+                    const int64_t oldPerMp =
+                        g.emaGenerationNsPerMp.load(std::memory_order_relaxed);
+                    const int64_t nextPerMp =
+                        oldPerMp <= 0 ? nsPerMp : (oldPerMp * 7 + nsPerMp) / 8;
+                    g.emaGenerationNsPerMp.store(nextPerMp, std::memory_order_relaxed);
                 }
             }
 
@@ -2447,9 +2496,10 @@ void workerThread() {
                 !g.stopRequested;
 
             if (!generationStillValid) {
-                // REAL goes first. Any semaphore-drain wait is queued only
-                // after the REAL blit, so stale GEN completion cannot block it.
-                postCurrentReal();
+                // REAL was already published before generation started. If
+                // generation was not actually started, keep the passthrough
+                // fallback here.
+                if (!realPosted) postCurrentReal();
                 for (VkSemaphore sem : framegenDoneSems) {
                     if (sem != VK_NULL_HANDLE)
                         drainFramegenCompletionSemaphore(sem);
@@ -2473,7 +2523,7 @@ void workerThread() {
                     ? framegenDoneSems[outputIndex] : VK_NULL_HANDLE;
                 if (timedBlit(g.outputs[outputIndex], done)) postedGeneratedThisIter++;
             }
-            postCurrentReal();
+            if (!realPosted) postCurrentReal();
 
             if (postedGeneratedThisIter > 0) {
                 g.generatedFrames.fetch_add(static_cast<uint64_t>(postedGeneratedThisIter),
@@ -2962,6 +3012,7 @@ void shutdownRenderLoop() {
         g.shizukuFrameTimeNs.store(0, std::memory_order_relaxed);
         g.shizukuPacingJitterNs.store(0, std::memory_order_relaxed);
         g.emaGenerationNs.store(0, std::memory_order_relaxed);
+        g.emaGenerationNsPerMp.store(0, std::memory_order_relaxed);
         g.emaCaptureIntervalNs.store(0, std::memory_order_relaxed);
         g.lastProcessedCaptureTimestampNs.store(0, std::memory_order_relaxed);
         g.dynamicBypassCount.store(0, std::memory_order_relaxed);
