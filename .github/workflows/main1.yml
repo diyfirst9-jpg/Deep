@@ -74,20 +74,6 @@ jobs:
       # Maven Central can temporarily return HTTP 429 (Too Many Requests).
       # Retry the Gradle build so transient repository rate limits do not
       # fail the workflow.
-      - name: Build debug APK
-        working-directory: android-app
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4; do
-            echo "Gradle debug build attempt ${attempt}/4"
-            if ./gradlew :app:assembleDebug --stacktrace --no-daemon; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 4 ]; then
-              sleep $((attempt * 20))
-            fi
-          done
-          exit 1
 
       - name: Build release APK
         working-directory: android-app
