@@ -129,8 +129,10 @@ fun AutomaticOverlayScreen(nav: NavHostController) {
         )
         Spacer(Modifier.height(12.dp))
 
+        // Accessibility-permission nagging moved to the single Setup screen
+        // (Routes.SETUP) — this screen just points there if it's missing.
         if (!a11yEnabled) {
-            LsfgCard(accent = true) {
+            LsfgCard(accent = true, onClick = { nav.navigate(Routes.SETUP) }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconBadge(
                         icon = Icons.Filled.Accessibility,
@@ -146,17 +148,6 @@ fun AutomaticOverlayScreen(nav: NavHostController) {
                         )
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-                LsfgSecondaryButton(
-                    text = stringResource(R.string.automatic_overlay_a11y_action),
-                    onClick = {
-                        ctx.startActivity(
-                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
             Spacer(Modifier.height(12.dp))
         }

@@ -119,6 +119,11 @@ IfrnetInterpolator::~IfrnetInterpolator() {
 }
 
 int IfrnetInterpolator::load(const std::string &modelDir, bool allowGpu, int vulkanDeviceIndex, int numThreads) {
+    // See gpuLoadMutex()'s comment in NcnnInterpolator.hpp: this serializes
+    // load()/unload() against NcnnInterpolator's AND IfrnetInterpolator's
+    // instances process-wide, since the settings-screen test instance and
+    // the live session's instance both bind to the same Vulkan device.
+    std::lock_guard<std::recursive_mutex> gpuLock(gpuLoadMutex());
     unload();
 
     const std::string ifrnetParam = modelDir + "/ifrnet.param";
@@ -183,6 +188,7 @@ int IfrnetInterpolator::load(const std::string &modelDir, bool allowGpu, int vul
 }
 
 void IfrnetInterpolator::unload() {
+    std::lock_guard<std::recursive_mutex> gpuLock(gpuLoadMutex());
     if (impl_->gpuLoaded) {
         impl_->ifrnetGpu.clear();
         impl_->gpuLoaded = false;

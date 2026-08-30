@@ -25,6 +25,16 @@
 
 namespace lsfg_android {
 
+std::recursive_mutex &gpuLoadMutex() {
+    // Meyers singleton: thread-safe to initialize under C++11's static
+    // local init rules, and shared by every TU that includes
+    // NcnnInterpolator.hpp (NcnnInterpolator.cpp, IfrnetInterpolator.cpp,
+    // and both lsfg_jni.cpp/lsfg_render_loop.cpp indirectly via the
+    // instances they own).
+    static std::recursive_mutex m;
+    return m;
+}
+
 namespace {
 
 bool file_exists(const std::string &path) {
@@ -118,6 +128,7 @@ NcnnInterpolator::~NcnnInterpolator() {
 }
 
 int NcnnInterpolator::load(const std::string &modelDir, bool allowGpu, int vulkanDeviceIndex, int numThreads) {
+    std::lock_guard<std::recursive_mutex> gpuLock(gpuLoadMutex());
     unload();
 
     const std::string flowParam = modelDir + "/flownet.param";
@@ -188,6 +199,7 @@ int NcnnInterpolator::load(const std::string &modelDir, bool allowGpu, int vulka
 }
 
 void NcnnInterpolator::unload() {
+    std::lock_guard<std::recursive_mutex> gpuLock(gpuLoadMutex());
     if (impl_->gpuLoaded) {
         impl_->flownetGpu.clear();
         impl_->gpuLoaded = false;

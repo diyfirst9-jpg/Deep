@@ -1,13 +1,18 @@
 package com.firstt175.deepdrop
 
 import android.app.Application
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
+import coil.memory.MemoryCache
 import com.firstt175.deepdrop.session.AppIntegrity
 import com.firstt175.deepdrop.session.CrashReporter
 import com.firstt175.deepdrop.session.GamepadInputManager
 import com.firstt175.deepdrop.session.LsfgLog
 import com.firstt175.deepdrop.session.AdbDisplayController
 
-class LsfgApplication : Application() {
+class LsfgApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         // Install the crash reporter as early as possible so even a crash during
@@ -42,4 +47,29 @@ class LsfgApplication : Application() {
             AppIntegrity.Result.NOT_CONFIGURED -> Unit
         }
     }
+
+    /**
+     * Coil's default ImageLoader sizes its in-memory bitmap cache to 25% of
+     * available app RAM, which is unnecessary here — the app only ever
+     * loads locally-decoded app icons (already downsampled, see
+     * GameLauncherScreen) and one small bundled GIF avatar on the Credits
+     * screen. Capping it well below the default keeps that cache from
+     * quietly growing into a large, mostly-unused RAM reservation. Nothing
+     * here touches the frame-generation pipeline, which does its own
+     * memory management separately in native code.
+     */
+    override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
+        .components {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                add(ImageDecoderDecoder.Factory())
+            } else {
+                add(GifDecoder.Factory())
+            }
+        }
+        .memoryCache {
+            MemoryCache.Builder(this)
+                .maxSizePercent(0.08)
+                .build()
+        }
+        .build()
 }

@@ -278,27 +278,6 @@ fun ParamsFrameGenPacingScreen(nav: NavHostController) {
             }
         }
 
-        // ---- Vulkan presentation ------------------------------------------------------
-        // Nothing here is editable (present mode is hard-coded), so it's pure
-        // reference info — collapsed by default so it doesn't take up space
-        // above the settings people actually change.
-        CollapsibleSection(
-            title = "Vulkan presentation",
-            subtitle = "Mailbox, hard-coded — tap for details",
-        ) {
-            Text(
-                text = "One global present mode is used by the entire render loop. No software frame pacing or refresh-rate control is applied by the app.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "MAILBOX • HARD-CODED • NO FALLBACK",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-
         TailNote()
     }
 }
@@ -408,23 +387,6 @@ fun OverlayDisplayScreen(nav: NavHostController) {
                     refreshConfigState(prefs)
                 },
             )
-            // Gesture forwarding only makes sense as a companion to trusted overlay
-            // (see LsfgAccessibilityService's class doc) — hide it until that's on,
-            // and force it back off if the user later turns trusted overlay off, so
-            // the preference can never be left dangling in an inconsistent state.
-            if (state.trustedOverlay) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                ToggleRow(
-                    icon = Icons.Filled.TouchApp,
-                    title = stringResource(R.string.param_gesture_forwarding),
-                    description = stringResource(R.string.param_gesture_forwarding_desc),
-                    checked = state.gestureForwardingEnabled,
-                    onCheckedChange = {
-                        prefs.setGestureForwardingEnabled(it)
-                        refreshConfigState(prefs)
-                    },
-                )
-            }
         }
 
         // ---- Capture mode ----------------------------------------------------------

@@ -7,14 +7,10 @@ import android.content.Context
  *
  * - [LIST]: single-column rows, one app per line (original layout).
  * - [GRID]: icon grid, several apps per row.
- * - [SWITCH_HORIZONTAL]: a horizontally scrolling row of large tiles, styled
- *   after the Nintendo Switch home menu — swipe sideways through big icons
- *   instead of scrolling a vertical list.
  */
 enum class LauncherLayout {
     LIST,
     GRID,
-    SWITCH_HORIZONTAL,
 }
 
 /** Persists the chosen [LauncherLayout] across app restarts. */
@@ -26,7 +22,7 @@ object LauncherLayoutStore {
         val stored = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_MODE, null)
         return runCatching { LauncherLayout.valueOf(stored ?: "") }
-            .getOrDefault(LauncherLayout.SWITCH_HORIZONTAL)
+            .getOrDefault(LauncherLayout.GRID)
     }
 
     fun save(ctx: Context, mode: LauncherLayout) {

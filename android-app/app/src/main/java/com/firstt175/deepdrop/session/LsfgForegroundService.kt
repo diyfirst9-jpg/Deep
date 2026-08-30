@@ -69,6 +69,12 @@ class LsfgForegroundService : Service() {
     private var sessionAnimationsDisabled: Boolean = false
     private var sessionOriginalStayOnValue: Int? = null
     private var sessionStayAwakeApplied: Boolean = false
+    // Performance extras — same apply-on-start/restore-on-stop pattern as the
+    // display/background/animation/stay-awake flags above.
+    private var sessionPerfModeApplied: Boolean = false
+    private var sessionDozeWhitelisted: Boolean = false
+    private var sessionRefreshRateApplied: Boolean = false
+    private var sessionWifiLockApplied: Boolean = false
     private var initialCaptureStarted: Boolean = false
     private var lsfgContextActive: Boolean = false
     private var lastSurface: Surface? = null
@@ -307,6 +313,24 @@ class LsfgForegroundService : Service() {
                 AdbDisplayController.setStayOnWhilePluggedIn(applicationContext, sessionOriginalStayOnValue ?: 0)
             }.onFailure { LsfgLog.w(TAG, "Failed to restore stay-awake setting", it) }
         }
+        if (sessionPerfModeApplied) {
+            runCatching { AdbDisplayController.setFixedPerformanceMode(false) }
+                .onFailure { LsfgLog.w(TAG, "Failed to disable fixed performance mode", it) }
+        }
+        if (sessionDozeWhitelisted) {
+            activeTargetPackage?.let { pkg ->
+                runCatching { AdbDisplayController.setDozeWhitelist(pkg, false) }
+                    .onFailure { LsfgLog.w(TAG, "Failed to remove doze whitelist entry", it) }
+            }
+        }
+        if (sessionRefreshRateApplied) {
+            runCatching { AdbDisplayController.setPeakRefreshRate(applicationContext, 0) }
+                .onFailure { LsfgLog.w(TAG, "Failed to clear refresh rate override", it) }
+        }
+        if (sessionWifiLockApplied) {
+            runCatching { WifiPerfLock.release() }
+                .onFailure { LsfgLog.w(TAG, "Failed to release wifi high-perf lock", it) }
+        }
         sessionDisplayApplied = false
         sessionBackgroundPolicyApplied = false
         sessionAnimationsDisabled = false
@@ -314,6 +338,10 @@ class LsfgForegroundService : Service() {
         sessionOriginalStayOnValue = null
         sessionDisplayProfile = null
         sessionOriginalActivityManagerConstants = null
+        sessionPerfModeApplied = false
+        sessionDozeWhitelisted = false
+        sessionRefreshRateApplied = false
+        sessionWifiLockApplied = false
 
         // The session is gone — the launcher dot may want to re-appear if the
         // target app is still in the foreground.
@@ -437,6 +465,26 @@ class LsfgForegroundService : Service() {
                     if (stored.keepAwake) {
                         sessionOriginalStayOnValue = AdbDisplayController.getStayOnWhilePluggedIn(applicationContext)
                         sessionStayAwakeApplied = AdbDisplayController.enableStayAwake(applicationContext)
+                    }
+                    // Performance extras — best-effort; each setter returns false
+                    // (and logs) instead of throwing when Shizuku isn't available,
+                    // so a missing Shizuku grant never blocks session start.
+                    if (stored.forceStopBackground) {
+                        AdbDisplayController.forceStopOtherApps(applicationContext, targetPkg)
+                    }
+                    if (stored.fixedPerformanceMode) {
+                        sessionPerfModeApplied = AdbDisplayController.setFixedPerformanceMode(true)
+                    }
+                    if (stored.dozeWhitelist) {
+                        sessionDozeWhitelisted = AdbDisplayController.setDozeWhitelist(targetPkg, true)
+                    }
+                    if (stored.lockRefreshRateHz > 0) {
+                        sessionRefreshRateApplied =
+                            AdbDisplayController.setPeakRefreshRate(applicationContext, stored.lockRefreshRateHz)
+                    }
+                    if (stored.wifiHighPerfLock) {
+                        WifiPerfLock.acquire(applicationContext)
+                        sessionWifiLockApplied = true
                     }
                 }
             }.onFailure { LsfgLog.w(TAG, "Per-app display policy failed", it) }

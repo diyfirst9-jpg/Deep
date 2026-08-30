@@ -138,13 +138,11 @@
 
 
     <string name="crash_dialog_title">LSFG-Android+ crashed on last run</string>
-    <string name="crash_dialog_body">A report was saved. You can share it with the developer to help debug the issue. Device and extension info is already included — no personal data is attached.</string>
-    <string name="crash_dialog_share">Share report</string>
+    <string name="crash_dialog_body">A report was saved on your device. It stays local — you can view it in the app.</string>
     <string name="crash_dialog_dismiss">Dismiss</string>
     <string name="crash_dialog_view">View</string>
-    <string name="crash_export_log">Export diagnostic log</string>
+    <string name="crash_export_log">View diagnostic log</string>
     <string name="battery_exempt_menu_item">Exempt from battery optimization</string>
-    <string name="crash_export_none">No diagnostic log available yet — run a session first.</string>
     <string name="gamepad_hint_select">Select</string>
     <string name="gamepad_hint_back">Back</string>
     <string name="gamepad_hint_switch_tab">Switch tab</string>
@@ -154,7 +152,6 @@
     <string name="toast_no_launch_button">No launch button found for %1$s</string>
     <string name="layout_list">List</string>
     <string name="layout_grid">Grid</string>
-    <string name="layout_switch">Horizontal (Switch)</string>
     <string name="ready_to_launch_title">Ready to launch</string>
     <string name="ready_to_launch_subtitle">Found %1$d apps • %2$d games • launch directly from Deepdrop</string>
     <string name="filter_games_count">Games %1$d</string>
@@ -204,5 +201,39 @@
     <string name="credits_donate_eyebrow">Donate</string>
     <string name="credits_donate_title">Support the developer</string>
     <string name="credits_donate_message">Thank you for your support — every donation you make won\'t go to waste. It goes toward funding education for kids in need.</string>
+
+    <!-- Device profile screen -->
+    <string name="profile_title">Device Profile</string>
+    <string name="profile_button">Profile</string>
+    <string name="profile_section_device">Device</string>
+    <string name="profile_model">Model</string>
+    <string name="profile_android">Android</string>
+    <string name="profile_soc">Chipset</string>
+    <string name="profile_abi">ABI</string>
+    <string name="profile_section_access">Access</string>
+    <string name="profile_root">Root</string>
+    <string name="profile_shizuku">Shizuku</string>
+    <string name="profile_section_cpu">CPU</string>
+    <string name="profile_cpu_load">Load</string>
+    <string name="profile_cpu_temp">Temperature</string>
+    <string name="profile_cpu_cores">Cores</string>
+    <string name="profile_value_na">N/A</string>
+    <string name="profile_cluster_freq_format">%1$d MHz (max %2$d)</string>
+    <string name="profile_cluster_freq_max_only_format">up to %1$d MHz</string>
+    <string name="profile_section_memory">Memory</string>
+    <string name="profile_ram_used">Used</string>
+    <string name="profile_ram_free">Free</string>
+    <string name="profile_ram_total">Total</string>
+    <string name="profile_section_gpu">GPU / Vulkan</string>
+    <string name="profile_gpu_name">GPU</string>
+    <string name="profile_gpu_vendor">Vendor</string>
+    <string name="profile_gpu_type">Type</string>
+    <string name="profile_gpu_driver">Driver</string>
+    <string name="profile_gpu_vram">VRAM (est.)</string>
+    <string name="profile_vulkan_api">Vulkan API</string>
+    <string name="profile_section_display">Display</string>
+    <string name="profile_display_resolution">Resolution</string>
+    <string name="profile_display_refresh">Refresh rate</string>
+    <string name="profile_display_density">Density</string>
 
 </resources>

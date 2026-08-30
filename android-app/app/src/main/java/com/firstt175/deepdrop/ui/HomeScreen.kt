@@ -144,16 +144,10 @@ fun HomeScreen(nav: NavHostController) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val intent = CrashReporter.buildShareIntent(ctx)
-                    if (intent != null) {
-                        ctx.startActivity(
-                            Intent.createChooser(intent, "Share crash report")
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
                     CrashReporter.clearPendingCrash(ctx)
                     showCrashDialog = false
-                }) { Text(stringResource(R.string.crash_dialog_share)) }
+                    nav.navigate(Routes.LOG_VIEWER)
+                }) { Text("View log") }
             },
             dismissButton = {
                 Row {
@@ -214,17 +208,7 @@ fun HomeScreen(nav: NavHostController) {
             IconChip(
                 icon = Icons.Filled.BugReport,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                onClick = {
-                    val intent = CrashReporter.buildShareIntent(ctx)
-                    if (intent == null) {
-                        Toast.makeText(ctx, R.string.crash_export_none, Toast.LENGTH_SHORT).show()
-                    } else {
-                        ctx.startActivity(
-                            Intent.createChooser(intent, "Export diagnostic log")
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                },
+                onClick = { nav.navigate(Routes.LOG_VIEWER) },
             )
             Spacer(Modifier.size(8.dp))
             Box {
@@ -260,15 +244,7 @@ fun HomeScreen(nav: NavHostController) {
                         leadingIcon = { Icon(Icons.Filled.BugReport, contentDescription = null) },
                         onClick = {
                             showMoreMenu = false
-                            val intent = CrashReporter.buildShareIntent(ctx)
-                            if (intent == null) {
-                                Toast.makeText(ctx, R.string.crash_export_none, Toast.LENGTH_SHORT).show()
-                            } else {
-                                ctx.startActivity(
-                                    Intent.createChooser(intent, "Export diagnostic log")
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            }
+                            nav.navigate(Routes.LOG_VIEWER)
                         },
                     )
                     DropdownMenuItem(
@@ -295,27 +271,21 @@ fun HomeScreen(nav: NavHostController) {
             LanguagePickerDialog(onDismiss = { showLanguageDialog = false })
         }
 
+        // One-stop permission setup: overlay, accessibility, battery
+        // exemption and WRITE_SECURE_SETTINGS all live on this one screen
+        // instead of being requested piecemeal across the app.
+        com.firstt175.deepdrop.ui.components.LsfgSecondaryButton(
+            text = "Setup — grant all permissions",
+            leadingIcon = Icons.Filled.Accessibility,
+            onClick = { nav.navigate(Routes.SETUP) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         // Session card: sessions are launched exclusively via the Automatic
         // Overlay handle now (see step 4 below) — there is no manual "pick an
         // app, then start" flow. This card just surfaces overlay-permission
         // guidance and a manual stop, in case the handle/dot is unreachable.
         LsfgCard(accent = true) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    text = "Sessions start from the Automatic Overlay handle — add apps in step 4 below, then tap the handle when that app is open.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Spacer(Modifier.height(12.dp))
             TextButton(
                 onClick = {
                     lastError = null
@@ -383,49 +353,6 @@ fun HomeScreen(nav: NavHostController) {
 
         }
 
-        // Limitation notice
-        LsfgCard {
-            Row(verticalAlignment = Alignment.Top) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .padding(top = 8.dp),
-                )
-                Column {
-                    Text(
-                        text = stringResource(R.string.limitation_title).uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = LsfgPrimary,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = stringResource(R.string.limitation_body),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
-        if (state.captureSource == CaptureSource.SHIZUKU) {
-            LsfgCard {
-                Column {
-                    Text(
-                        text = "SHIZUKU CAPTURE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = LsfgPrimary,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "Uses Shizuku's privileged UID-filtered capture for the target app, avoiding MediaProjection overlay feedback. Requires the Shizuku app, Shizuku permission, and ADB or wireless debugging active before starting.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
         if (state.captureSource == CaptureSource.ROOT) {
             LsfgCard {
                 Column {
@@ -457,7 +384,6 @@ fun HomeScreen(nav: NavHostController) {
         val autoCount = state.autoEnabledApps.size
         val nextStep = when {
             !state.shadersReady -> 1
-            autoCount == 0 -> 4
             else -> null
         }
 
@@ -530,14 +456,13 @@ fun HomeScreen(nav: NavHostController) {
         } else {
             stringResource(R.string.automatic_overlay_count_n, autoCount)
         }
-        StepCard(
-            number = 4,
-            title = stringResource(R.string.nav_automatic_overlay),
-            subtitle = autoSubtitle,
-            status = if (autoCount > 0) StatusTone.Good else StatusTone.Neutral,
-            statusLabel = if (autoCount > 0) "On" else "Off",
-            emphasized = nextStep == 4,
+        // Plain button instead of a numbered wizard step — permission
+        // handling for this now lives entirely in Setup above.
+        com.firstt175.deepdrop.ui.components.LsfgSecondaryButton(
+            text = stringResource(R.string.nav_automatic_overlay) + " — " + autoSubtitle,
+            leadingIcon = Icons.Filled.Speed,
             onClick = { nav.navigate(Routes.AUTOMATIC_OVERLAY) },
+            modifier = Modifier.fillMaxWidth(),
         )
 
         Spacer(Modifier.height(8.dp))

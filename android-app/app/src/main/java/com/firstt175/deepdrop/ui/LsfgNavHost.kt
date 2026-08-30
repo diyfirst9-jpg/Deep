@@ -18,7 +18,10 @@ object Routes {
     const val PARAMS_FRAMEGEN_PACING = "params_framegen_pacing"
     const val OVERLAY_DISPLAY = "overlay_display"
     const val AUTOMATIC_OVERLAY = "automatic_overlay"
+    const val SETUP = "setup"
     const val CREDITS = "credits"
+    const val PROFILE = "profile"
+    const val LOG_VIEWER = "log_viewer"
 }
 
 private const val ANIM_MS = 240
@@ -48,6 +51,9 @@ fun LsfgNavHost(navController: NavHostController) {
         composable(Routes.PARAMS_FRAMEGEN_PACING) { ParamsFrameGenPacingScreen(navController) }
         composable(Routes.OVERLAY_DISPLAY) { OverlayDisplayScreen(navController) }
         composable(Routes.AUTOMATIC_OVERLAY) { AutomaticOverlayScreen(navController) }
+        composable(Routes.SETUP) { SetupScreen(navController) }
         composable(Routes.CREDITS) { CreditsScreen(navController) }
+        composable(Routes.PROFILE) { DeviceProfileScreen(navController) }
+        composable(Routes.LOG_VIEWER) { LogViewerScreen(navController) }
     }
 }

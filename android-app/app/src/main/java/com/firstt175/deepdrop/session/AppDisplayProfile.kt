@@ -1,6 +1,8 @@
 package com.firstt175.deepdrop.session
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
 import kotlinx.coroutines.runBlocking
@@ -25,6 +27,12 @@ data class AppDisplayProfile(
     val maxBackgroundApps: Int = 1,
     val disableAnimations: Boolean = false,
     val keepAwake: Boolean = false,
+    // Performance extras (see AdbDisplayController's Shizuku-backed setters below).
+    val fixedPerformanceMode: Boolean = false,
+    val dozeWhitelist: Boolean = false,
+    val forceStopBackground: Boolean = false,
+    val lockRefreshRateHz: Int = 0, // 0 = do not override
+    val wifiHighPerfLock: Boolean = false,
 )
 
 object AppDisplayProfileStore {
@@ -50,6 +58,11 @@ object AppDisplayProfileStore {
             maxBackgroundApps = p.getInt("$k.maxBg", 1),
             disableAnimations = p.getBoolean("$k.anim", false),
             keepAwake = p.getBoolean("$k.awake", false),
+            fixedPerformanceMode = p.getBoolean("$k.perfMode", false),
+            dozeWhitelist = p.getBoolean("$k.doze", false),
+            forceStopBackground = p.getBoolean("$k.forceStop", false),
+            lockRefreshRateHz = p.getInt("$k.refreshHz", 0),
+            wifiHighPerfLock = p.getBoolean("$k.wifiLock", false),
         )
     }
 
@@ -68,6 +81,11 @@ object AppDisplayProfileStore {
             .putInt("$k.maxBg", profile.maxBackgroundApps.coerceAtLeast(1))
             .putBoolean("$k.anim", profile.disableAnimations)
             .putBoolean("$k.awake", profile.keepAwake)
+            .putBoolean("$k.perfMode", profile.fixedPerformanceMode)
+            .putBoolean("$k.doze", profile.dozeWhitelist)
+            .putBoolean("$k.forceStop", profile.forceStopBackground)
+            .putInt("$k.refreshHz", profile.lockRefreshRateHz.coerceAtLeast(0))
+            .putBoolean("$k.wifiLock", profile.wifiHighPerfLock)
             .apply()
     }
 
@@ -118,17 +136,19 @@ object AdbDisplayController {
     const val WRITE_SECURE_SETTINGS_COMMAND =
         "adb shell pm grant com.firstt175.deepdrop android.permission.WRITE_SECURE_SETTINGS"
     private const val DISPLAY_ID = android.view.Display.DEFAULT_DISPLAY
-    // USER_CURRENT sentinel (android.os.UserHandle.USER_CURRENT), avoids needing
-    // a live user id lookup via hidden API.
+    // Do NOT pass USER_CURRENT (-2) to IWindowManager from an app UID.
+    // WindowManagerService resolves that sentinel as a cross-user operation and
+    // rejects it with INTERACT_ACROSS_USERS_FULL. Always resolve the actual
+    // current user before calling the per-user density APIs.
     private const val USER_CURRENT = -2
 
     // Android 9+ (API 28+) enforces restrictions on reflective calls into
     // non-SDK (hidden) APIs, which is exactly what IWindowManager access
     // below relies on. Enforcement can vary by OEM/ROM and sometimes throws
     // NoSuchMethodException/SecurityException even when the method exists.
-    // WRITE_SECURE_SETTINGS is sufficient to write these Settings.Global
-    // keys, which disable that enforcement for the app. This mirrors what
-    // the `settings put global hidden_api_policy 1` ADB command does.
+    // WRITE_SECURE_SETTINGS allows writing the policy settings below, but it
+    // does NOT grant cross-user privileges to IWindowManager. In particular,
+    // per-user density calls must use the concrete current user id.
     private val HIDDEN_API_POLICY_KEYS = arrayOf(
         "hidden_api_policy",
         "hidden_api_policy_pre_p_apps",
@@ -266,26 +286,30 @@ object AdbDisplayController {
      * deliberately different from [readDisplay] (which always reports the true
      * physical panel, ignoring any active override).
      */
+    /**
+     * Reads the CURRENT base size/density through WindowManager first.
+     * Shizuku is only used as a fallback when WRITE_SECURE_SETTINGS is unavailable.
+     */
     private fun readCurrentBaseDisplay(ctx: Context): PhysicalDisplayInfo? {
-        if (shizukuReady()) {
-            readCurrentViaWmShell()?.let { return it }
+        if (isReady(ctx)) {
+            val app = runCatching {
+                val wm = windowManagerService() ?: return@runCatching null
+                val cls = iwm()
+                val point = android.graphics.Point()
+                cls.getMethod("getBaseDisplaySize", Int::class.javaPrimitiveType, android.graphics.Point::class.java)
+                    .invoke(wm, DISPLAY_ID, point)
+                val density = cls.getMethod("getBaseDisplayDensity", Int::class.javaPrimitiveType)
+                    .invoke(wm, DISPLAY_ID) as Int
+                if (point.x <= 0 || point.y <= 0 || density <= 0) null
+                else PhysicalDisplayInfo(point.x, point.y, density)
+            }.onFailure {
+                LsfgLog.e(TAG, "readCurrentBaseDisplay failed: ${it.javaClass.simpleName}: ${it.message}", it)
+            }.getOrNull()
+            if (app != null) return app
         }
-        if (!isReady(ctx)) return null
-        return runCatching {
-            val wm = windowManagerService() ?: return@runCatching null
-            val cls = iwm()
-            val point = android.graphics.Point()
-            cls.getMethod("getBaseDisplaySize", Int::class.javaPrimitiveType, android.graphics.Point::class.java)
-                .invoke(wm, DISPLAY_ID, point)
-            val density = cls.getMethod("getBaseDisplayDensity", Int::class.javaPrimitiveType)
-                .invoke(wm, DISPLAY_ID) as Int
-            if (point.x <= 0 || point.y <= 0 || density <= 0) null
-            else PhysicalDisplayInfo(point.x, point.y, density)
-        }.onFailure {
-            LsfgLog.e(TAG, "readCurrentBaseDisplay failed: ${it.javaClass.simpleName}: ${it.message}", it)
-        }.getOrNull()
+        if (shizukuReady()) return readCurrentViaWmShell()
+        return null
     }
-
     /**
      * Safety net for the launcher's home screen: compares the display's
      * current base size/density against the true native panel values and,
@@ -324,8 +348,14 @@ object AdbDisplayController {
 
     fun apply(ctx: Context, profile: AppDisplayProfile): Boolean {
         val secureReady = isReady(ctx)
-        if ((!secureReady && !shizukuReady()) || profile.originalWidth <= 0 || profile.originalHeight <= 0) {
-            LsfgLog.w(TAG, "apply skipped: secure=$secureReady shizuku=${shizukuReady()} original=${profile.originalWidth}x${profile.originalHeight}")
+        if ((!secureReady && !shizukuReady()) ||
+            profile.originalWidth <= 0 || profile.originalHeight <= 0
+        ) {
+            LsfgLog.w(
+                TAG,
+                "apply skipped: WRITE_SECURE_SETTINGS=$secureReady " +
+                    "shizuku=${shizukuReady()} original=${profile.originalWidth}x${profile.originalHeight}",
+            )
             return false
         }
 
@@ -337,53 +367,163 @@ object AdbDisplayController {
         )
         if (targetWidth <= 0 || targetHeight <= 0 || targetDpi <= 0) return false
 
-        // Prefer the same shell path as `adb shell wm ...` when Shizuku is
-        // available. It updates WindowManagerService directly and avoids
-        // hidden-API reflection on OEM builds.
-        if (shizukuReady()) {
-            val size = shizukuCommandBlocking("wm size ${targetWidth}x${targetHeight}")
-            if (size?.ok == true) {
-                val density = shizukuCommandBlocking("wm density $targetDpi")
-                if (density?.ok == true) {
-                    val current = readCurrentViaWmShell()
-                    val verified = current?.width == targetWidth && current.height == targetHeight && current.dpi == targetDpi
-                    if (verified) {
-                        LsfgLog.i(TAG, "apply verified via Shizuku: ${targetWidth}x${targetHeight}@${targetDpi}")
-                        return true
-                    }
+        // PRIMARY PATH:
+        // The ADB command
+        //   adb shell pm grant com.firstt175.deepdrop android.permission.WRITE_SECURE_SETTINGS
+        // grants the app exactly the permission required by
+        // IWindowManager.setForcedDisplaySize()/setForcedDisplayDensityForUser().
+        // Do this directly from the app process so Shizuku is not required
+        // during normal use.
+        if (secureReady) {
+            unlockHiddenApiPolicyIfNeeded(ctx)
+            val appPath = runCatching {
+                val wm = windowManagerService() ?: return@runCatching false
+                val cls = iwm()
+
+                val okSize = setForcedSize(wm, cls, targetWidth, targetHeight)
+
+                val okDensity = if (okSize) {
+                    setForcedDensity(wm, cls, targetDpi)
+                } else {
+                    false
                 }
+
+                if (!okSize || !okDensity) {
+                    resetAppSideOnly(wm, cls)
+                    false
+                } else {
+                    val current = readCurrentBaseDisplay(ctx)
+                    val verified = current?.width == targetWidth &&
+                        current.height == targetHeight &&
+                        current.dpi == targetDpi
+                    if (!verified) resetAppSideOnly(wm, cls)
+                    verified
+                }
+            }.onFailure {
+                LsfgLog.e(TAG, "app-side display apply failed", it)
+            }.getOrDefault(false)
+
+            if (appPath) {
+                LsfgLog.i(
+                    TAG,
+                    "apply verified with WRITE_SECURE_SETTINGS: " +
+                        "${targetWidth}x${targetHeight}@${targetDpi}",
+                )
+                return true
             }
-            // Never leave a partially applied override behind.
-            shizukuCommandBlocking("wm size reset")
-            shizukuCommandBlocking("wm density reset")
-            LsfgLog.w(TAG, "apply via Shizuku did not verify; override rolled back")
-            if (!secureReady) return false
         }
 
-        if (!secureReady) return false
-
-        // Last-resort compatibility path for builds where Shizuku is absent.
-        return runCatching {
-            val wm = windowManagerService() ?: return@runCatching false
-            val cls = iwm()
-            val okSize = runCatching {
-                cls.getMethod("setForcedDisplaySize", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-                    .invoke(wm, DISPLAY_ID, targetWidth, targetHeight)
-                true
-            }.getOrDefault(false)
-            val okDensity = if (okSize) setForcedDensity(wm, cls, targetDpi) else false
-            if (!okSize || !okDensity) {
-                reset(ctx)
-                false
+        // FALLBACK:
+        // Keep Shizuku support for OEM builds where app-side hidden-API
+        // reflection is blocked despite WRITE_SECURE_SETTINGS.
+        if (shizukuReady()) {
+            val size = shizukuCommandBlocking("wm size ${targetWidth}x${targetHeight}")
+            val density = if (size?.ok == true) {
+                shizukuCommandBlocking("wm density $targetDpi")
             } else {
-                val current = readCurrentBaseDisplay(ctx)
-                val verified = current?.width == targetWidth && current.height == targetHeight && current.dpi == targetDpi
-                if (!verified) reset(ctx)
-                verified
+                null
             }
-        }.onFailure {
-            LsfgLog.e(TAG, "apply fallback failed", it)
-        }.getOrDefault(false)
+            if (size?.ok == true && density?.ok == true) {
+                val current = readCurrentViaWmShell()
+                val verified = current?.width == targetWidth &&
+                    current.height == targetHeight &&
+                    current.dpi == targetDpi
+                if (verified) {
+                    LsfgLog.i(TAG, "apply verified via Shizuku fallback")
+                    return true
+                }
+            }
+            shizukuCommandBlocking("wm size reset")
+            shizukuCommandBlocking("wm density reset")
+        }
+
+        return false
+    }
+
+    /** Clears an app-side forced display override using every known OEM/API signature. */
+    private fun resetAppSideOnly(wm: Any, cls: Class<*>) {
+        val sizeAttempts: List<Pair<String, () -> Unit>> = listOf(
+            "clearForcedDisplaySize(displayId)" to {
+                cls.getMethod("clearForcedDisplaySize", Int::class.javaPrimitiveType)
+                    .invoke(wm, DISPLAY_ID)
+            },
+            "clearForcedDisplaySize()" to {
+                cls.getMethod("clearForcedDisplaySize").invoke(wm)
+            },
+        )
+        for ((label, attempt) in sizeAttempts) {
+            val result = runCatching(attempt)
+            if (result.isSuccess) {
+                LsfgLog.i(TAG, "$label succeeded")
+                break
+            }
+            val err = result.exceptionOrNull()
+            LsfgLog.w(TAG, "$label failed: ${err?.javaClass?.simpleName}: ${err?.message}", err)
+        }
+
+        val userId = resolveCurrentUserId()
+        val densityAttempts: List<Pair<String, () -> Unit>> = listOf(
+            "clearForcedDisplayDensityForUser(displayId,resolvedUserId)" to {
+                cls.getMethod(
+                    "clearForcedDisplayDensityForUser",
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                ).invoke(wm, DISPLAY_ID, userId)
+            },
+            "clearForcedDisplayDensityForUser(displayId)" to {
+                cls.getMethod(
+                    "clearForcedDisplayDensityForUser",
+                    Int::class.javaPrimitiveType,
+                ).invoke(wm, DISPLAY_ID)
+            },
+            "clearForcedDisplayDensity()" to {
+                cls.getMethod("clearForcedDisplayDensity").invoke(wm)
+            },
+        )
+        for ((label, attempt) in densityAttempts) {
+            val result = runCatching(attempt)
+            if (result.isSuccess) {
+                LsfgLog.i(TAG, "$label succeeded")
+                break
+            }
+            val err = result.exceptionOrNull()
+            LsfgLog.w(TAG, "$label failed: ${err?.javaClass?.simpleName}: ${err?.message}", err)
+        }
+    }
+
+    /**
+     * Tries all known IWindowManager setForcedDisplaySize signatures.
+     * Android branches and OEM builds expose different hidden-AIDL shapes.
+     */
+    private fun setForcedSize(wm: Any, cls: Class<*>, width: Int, height: Int): Boolean {
+        val attempts: List<Pair<String, () -> Unit>> = listOf(
+            "setForcedDisplaySize(displayId,width,height)" to {
+                cls.getMethod("setForcedDisplaySize",
+                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType).invoke(wm, DISPLAY_ID, width, height)
+            },
+            "setForcedDisplaySize(width,height)" to {
+                cls.getMethod("setForcedDisplaySize",
+                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                    .invoke(wm, width, height)
+            },
+            "setForcedDisplaySize(displayId,width,height,userId)" to {
+                cls.getMethod("setForcedDisplaySize",
+                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                    .invoke(wm, DISPLAY_ID, width, height, resolveCurrentUserId())
+            },
+        )
+        for ((label, attempt) in attempts) {
+            val result = runCatching(attempt)
+            if (result.isSuccess) {
+                LsfgLog.i(TAG, "$label succeeded (${width}x${height})")
+                return true
+            }
+            val err = result.exceptionOrNull()
+            LsfgLog.w(TAG, "$label failed: ${err?.javaClass?.simpleName}: ${err?.message}", err)
+        }
+        return false
     }
 
     /**
@@ -394,54 +534,59 @@ object AdbDisplayController {
      * just "resolution changed, DPI silently didn't".
      */
     private fun setForcedDensity(wm: Any, cls: Class<*>, densityDpi: Int): Boolean {
-        // Clear any density this app previously forced before setting a new
-        // value: on some OEM builds a second setForcedDisplayDensityForUser
-        // call while a prior forced value from an earlier/interrupted
-        // session is still active is a silent no-op.
-        runCatching {
-            cls.getMethod(
-                "clearForcedDisplayDensityForUser",
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType,
-            ).invoke(wm, DISPLAY_ID, USER_CURRENT)
-        }
+        val userId = resolveCurrentUserId()
 
+        // USER_CURRENT (-2) is invalid for an ordinary application caller on
+        // modern Android: WMS treats it as a cross-user request and throws
+        // INTERACT_ACROSS_USERS_FULL. Use the concrete current user instead.
         val attempts: List<Pair<String, () -> Unit>> = listOf(
-            "setForcedDisplayDensityForUser(USER_CURRENT)" to {
-                cls.getMethod(
-                    "setForcedDisplayDensityForUser",
-                    Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType,
-                ).invoke(wm, DISPLAY_ID, densityDpi, USER_CURRENT)
-            },
             "setForcedDisplayDensityForUser(resolvedUserId)" to {
-                val resolvedUser = resolveCurrentUserId()
                 cls.getMethod(
                     "setForcedDisplayDensityForUser",
                     Int::class.javaPrimitiveType,
                     Int::class.javaPrimitiveType,
                     Int::class.javaPrimitiveType,
-                ).invoke(wm, DISPLAY_ID, densityDpi, resolvedUser)
+                ).invoke(wm, DISPLAY_ID, densityDpi, userId)
             },
-            "setForcedDisplayDensity(legacy)" to {
-                // Pre-N / OEM fallback signature without a user id.
+            "setForcedDisplayDensityForUser(displayId,density,user,flags)" to {
+                cls.getMethod(
+                    "setForcedDisplayDensityForUser",
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                ).invoke(wm, DISPLAY_ID, densityDpi, userId, 0)
+            },
+            "setForcedDisplayDensity(legacy displayId,density)" to {
                 cls.getMethod(
                     "setForcedDisplayDensity",
                     Int::class.javaPrimitiveType,
                     Int::class.javaPrimitiveType,
                 ).invoke(wm, DISPLAY_ID, densityDpi)
             },
+            "setForcedDisplayDensity(density)" to {
+                cls.getMethod(
+                    "setForcedDisplayDensity",
+                    Int::class.javaPrimitiveType,
+                ).invoke(wm, densityDpi)
+            },
         )
 
         for ((label, attempt) in attempts) {
             val result = runCatching(attempt)
             if (result.isSuccess) {
-                LsfgLog.i(TAG, "setForcedDisplayDensity via $label succeeded (dpi=$densityDpi)")
+                LsfgLog.i(
+                    TAG,
+                    "setForcedDisplayDensity via $label succeeded (dpi=$densityDpi,user=$userId)",
+                )
                 return true
             }
             val err = result.exceptionOrNull()
-            LsfgLog.w(TAG, "setForcedDisplayDensity via $label failed: ${err?.javaClass?.simpleName}: ${err?.message}", err)
+            LsfgLog.w(
+                TAG,
+                "setForcedDisplayDensity via $label failed: ${err?.javaClass?.simpleName}: ${err?.message}",
+                err,
+            )
         }
         return false
     }
@@ -457,49 +602,53 @@ object AdbDisplayController {
     }
 
     fun reset(ctx: Context): Boolean {
-        var shellReset = false
+        // PRIMARY PATH: use the ADB-granted WRITE_SECURE_SETTINGS permission.
+        if (isReady(ctx)) {
+            unlockHiddenApiPolicyIfNeeded(ctx)
+            val appResult = runCatching {
+                val wm = windowManagerService() ?: return@runCatching false
+                val cls = iwm()
+                resetAppSideOnly(wm, cls)
+
+                val native = readDisplay(ctx)
+                val current = readCurrentBaseDisplay(ctx)
+                native != null && current != null &&
+                    current.width == native.width &&
+                    current.height == native.height &&
+                    current.dpi == native.dpi
+            }.onFailure {
+                LsfgLog.e(TAG, "app-side display reset failed", it)
+            }.getOrDefault(false)
+
+            if (appResult) {
+                DisplayOverrideState.clear(ctx)
+                LsfgLog.i(TAG, "reset verified with WRITE_SECURE_SETTINGS")
+                return true
+            }
+        }
+
+        // FALLBACK: Shizuku remains supported, but is no longer required.
         if (shizukuReady()) {
             val size = shizukuCommandBlocking("wm size reset")
             val density = shizukuCommandBlocking("wm density reset")
-            shellReset = size?.ok == true && density?.ok == true
+            val shellReset = size?.ok == true && density?.ok == true
             if (shellReset) {
                 val native = readDisplay(ctx)
                 val current = readCurrentViaWmShell()
-                if (native != null && current != null &&
-                    current.width == native.width && current.height == native.height && current.dpi == native.dpi) {
-                    LsfgLog.i(TAG, "reset verified via Shizuku")
+                val verified = native != null && current != null &&
+                    current.width == native.width &&
+                    current.height == native.height &&
+                    current.dpi == native.dpi
+                if (verified) {
                     DisplayOverrideState.clear(ctx)
+                    LsfgLog.i(TAG, "reset verified via Shizuku fallback")
                     return true
                 }
             }
         }
 
-        if (!isReady(ctx)) return shellReset
-        val wm = windowManagerService() ?: return shellReset
-        val cls = iwm()
-        val okSize = runCatching {
-            cls.getMethod("clearForcedDisplaySize", Int::class.javaPrimitiveType).invoke(wm, DISPLAY_ID)
-            true
-        }.getOrDefault(false)
-        val okDensity = runCatching {
-            cls.getMethod("clearForcedDisplayDensityForUser", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-                .invoke(wm, DISPLAY_ID, USER_CURRENT)
-            true
-        }.recoverCatching {
-            cls.getMethod("clearForcedDisplayDensityForUser", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-                .invoke(wm, DISPLAY_ID, resolveCurrentUserId())
-            true
-        }.recoverCatching {
-            cls.getMethod("clearForcedDisplayDensity", Int::class.javaPrimitiveType).invoke(wm, DISPLAY_ID)
-            true
-        }.getOrDefault(false)
-        val native = readDisplay(ctx)
-        val current = readCurrentBaseDisplay(ctx)
-        val verified = native != null && current != null &&
-            native.width == current.width && native.height == current.height && native.dpi == current.dpi
         DisplayOverrideState.clear(ctx)
-        LsfgLog.i(TAG, "reset: okSize=$okSize okDensity=$okDensity verified=$verified")
-        return (okSize || okDensity || shellReset) && verified
+        return false
     }
 
     /**
@@ -588,5 +737,158 @@ object AdbDisplayController {
      */
     fun killCachedProcesses() {
         LsfgLog.i(TAG, "killCachedProcesses skipped: no shell/Shizuku dependency")
+    }
+
+    // ---- Performance extras --------------------------------------------
+    // These require Shizuku (shell UID), unlike the WRITE_SECURE_SETTINGS
+    // controls above. They no-op (return false) if Shizuku isn't available;
+    // callers should treat that as "not applied" and not silently pretend
+    // success — same pattern as killCachedProcesses().
+
+    /**
+     * `cmd power set-fixed-performance-mode-enabled` is a real AOSP
+     * PowerManagerService shell command (requires DEVICE_POWER, which the
+     * shell UID has). It pins CPU/GPU clocks at max for as long as it's
+     * enabled — this is what stops mid-session throttling variance, not a
+     * cosmetic setting. Always call with false again when the session ends;
+     * leaving it on burns battery/heat even at idle.
+     */
+    fun setFixedPerformanceMode(enabled: Boolean): Boolean {
+        if (!shizukuReady()) {
+            LsfgLog.w(TAG, "setFixedPerformanceMode($enabled) skipped: Shizuku not available")
+            return false
+        }
+        val result = shizukuCommandBlocking("cmd power set-fixed-performance-mode-enabled $enabled")
+        LsfgLog.i(TAG, "setFixedPerformanceMode($enabled) -> ok=${result?.ok}")
+        return result?.ok ?: false
+    }
+
+    /**
+     * Adds/removes the target package from the Doze/App-Standby whitelist
+     * (`dumpsys deviceidle whitelist`). The foreground activity itself isn't
+     * Doze-restricted, but background services the game spawns (voice
+     * chat, overlays, download threads) are — whitelisting prevents those
+     * from being throttled mid-session. Always remove the whitelist entry
+     * again on session stop; leaving a game permanently whitelisted defeats
+     * battery optimization outside of play.
+     */
+    fun setDozeWhitelist(pkg: String, add: Boolean): Boolean {
+        if (!shizukuReady()) {
+            LsfgLog.w(TAG, "setDozeWhitelist($pkg,$add) skipped: Shizuku not available")
+            return false
+        }
+        val op = if (add) "+" else "-"
+        val result = shizukuCommandBlocking("dumpsys deviceidle whitelist $op$pkg")
+        LsfgLog.i(TAG, "setDozeWhitelist($pkg,$add) -> ok=${result?.ok}")
+        return result?.ok ?: false
+    }
+
+    /**
+     * Locks the display refresh rate via Settings.System peak/min_refresh_rate
+     * (covered by WRITE_SECURE_SETTINGS, same as the display-size controls).
+     * hz<=0 clears the override and lets the system pick its own rate again.
+     * This stops the panel from switching refresh rates mid-session (a real
+     * source of frame-pacing stutter on many OEM VRR implementations) — it
+     * does not raise the panel's max rate above what it already supports.
+     */
+    fun setPeakRefreshRate(ctx: Context, hz: Int): Boolean {
+        if (!isReady(ctx)) {
+            LsfgLog.w(TAG, "setPeakRefreshRate($hz) skipped: WRITE_SECURE_SETTINGS not granted")
+            return false
+        }
+        return runCatching {
+            val resolver = ctx.contentResolver
+            if (hz <= 0) {
+                Settings.System.putString(resolver, "min_refresh_rate", null)
+                Settings.System.putString(resolver, "peak_refresh_rate", null)
+            } else {
+                Settings.System.putFloat(resolver, "min_refresh_rate", hz.toFloat())
+                Settings.System.putFloat(resolver, "peak_refresh_rate", hz.toFloat())
+            }
+            LsfgLog.i(TAG, "setPeakRefreshRate($hz) applied")
+            true
+        }.onFailure {
+            LsfgLog.e(TAG, "setPeakRefreshRate($hz) failed", it)
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Force-stops every non-system, non-protected launcher-visible app via
+     * `am force-stop` (a real shell command, distinct from killCachedProcesses()
+     * above which is currently a no-op). This is meaningfully more aggressive
+     * than the max_cached_processes trick: it kills apps outright rather than
+     * just capping how many stay cached, freeing RAM/CPU immediately before
+     * the game launches. Never touches the game's own package, this app, or
+     * flagged system apps — force-stopping system components can break the
+     * device's running state until reboot.
+     *
+     * Uses the same ACTION_MAIN/CATEGORY_LAUNCHER query as GameLauncherScreen's
+     * loadLaunchableApps(), not PackageManager.getInstalledApplications(). On
+     * Android 11+, getInstalledApplications() is filtered by package
+     * visibility and would silently return only a handful of apps without the
+     * QUERY_ALL_PACKAGES permission (which Play restricts heavily) — the
+     * <queries> block already declared in AndroidManifest.xml for the launcher
+     * screen is what makes this query see every installed app instead.
+     */
+    fun forceStopOtherApps(ctx: Context, keepPkg: String) {
+        if (!shizukuReady()) {
+            LsfgLog.w(TAG, "forceStopOtherApps skipped: Shizuku not available")
+            return
+        }
+        val pm = ctx.packageManager
+        val protectedPkgs = setOf(ctx.packageName, keepPkg)
+        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+            .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+        val targets = runCatching {
+            pm.queryIntentActivities(intent, android.content.pm.PackageManager.MATCH_ALL)
+                .asSequence()
+                .mapNotNull { it.activityInfo?.applicationInfo }
+                .filter { it.packageName !in protectedPkgs }
+                .filter { (it.flags and ApplicationInfo.FLAG_SYSTEM) == 0 }
+                .map { it.packageName }
+                .distinct()
+                .toList()
+        }.getOrDefault(emptyList())
+        LsfgLog.i(TAG, "forceStopOtherApps: stopping ${targets.size} app(s)")
+        for (pkg in targets) {
+            shizukuCommandBlocking("am force-stop $pkg")
+        }
+    }
+}
+
+/**
+ * Keeps the Wi-Fi radio out of power-save sleep for the duration of a
+ * session. This is a plain WifiManager API — no Shizuku/root/ADB needed —
+ * and it is the one thing on this list that genuinely reduces latency
+ * spikes/ping variance from software alone: it does not lower baseline
+ * ping to a server, it only stops the radio from dozing between packets.
+ */
+object WifiPerfLock {
+    private const val TAG = "LsfgWifiPerfLock"
+    private var lock: WifiManager.WifiLock? = null
+
+    @Synchronized
+    fun acquire(ctx: Context) {
+        if (lock?.isHeld == true) return
+        runCatching {
+            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            lock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "lsfg_perf").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            LsfgLog.i(TAG, "wifi high-perf lock acquired")
+        }.onFailure {
+            LsfgLog.e(TAG, "wifi high-perf lock failed", it)
+        }
+    }
+
+    @Synchronized
+    fun release() {
+        runCatching {
+            lock?.takeIf { it.isHeld }?.release()
+        }.onFailure {
+            LsfgLog.e(TAG, "wifi high-perf lock release failed", it)
+        }
+        lock = null
     }
 }

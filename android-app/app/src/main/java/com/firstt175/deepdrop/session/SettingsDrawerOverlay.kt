@@ -580,24 +580,6 @@ class SettingsDrawerOverlay(
 
         panel.addView(divider())
 
-        // ---- Vulkan Presentation -------------------------------------------------------
-        val presentationSection = collapsibleSection(panel, "VULKAN PRESENTATION", initiallyExpanded = true)
-        presentationSection.addView(TextView(ctx).apply {
-            text = "One global present mode is used by every render-loop swapchain. No software frame pacing or refresh-rate control."
-            setTextColor(COLOR_ON_SURFACE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            alpha = 0.75f
-            setPadding(0, dp(4), 0, dp(8))
-        })
-        presentationSection.addView(TextView(ctx).apply {
-            text = "MAILBOX  •  HARD-CODED  •  NO FALLBACK"
-            setTextColor(COLOR_PRIMARY)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setPadding(0, dp(4), 0, dp(8))
-        })
-
-        panel.addView(divider())
-
         // ---- HUD & Overlay (FPS, frame graph, drawer edge) -----------------------------
         val hudSection = collapsibleSection(panel, "HUD & OVERLAY")
         hudSection.addView(switchRow(

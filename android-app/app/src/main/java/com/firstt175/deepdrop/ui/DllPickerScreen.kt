@@ -649,15 +649,6 @@ fun DllPickerScreen(nav: NavHostController) {
             HorizontalDivider()
             Spacer(Modifier.height(14.dp))
 
-            Text(
-                text = "Which bundled ncnn model runs the interpolation. Both are single-pass " +
-                    "networks with the same call shape. Pick one from ASSET MODELS below — " +
-                    "it re-tests the load automatically.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(Modifier.height(12.dp))
             Text(text = "ASSET MODELS — ${assetModels.size} models", style = MaterialTheme.typography.labelSmall, color = LsfgPrimary)
             Spacer(Modifier.height(8.dp))
             assetModels.forEach { model ->
@@ -690,12 +681,6 @@ fun DllPickerScreen(nav: NavHostController) {
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Every model folder under assets/models/ is discovered automatically. Tap a model to make it the active NCNN model.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
 
         LsfgCard {
@@ -811,76 +796,6 @@ fun DllPickerScreen(nav: NavHostController) {
             )
         }
 
-        run {
-            val activeEngineLabel = if (state.aiEngine == AiEngine.IFRNET) "IFRNet" else "RIFE"
-            val vulkanGpuCount = remember { runCatching { NativeBridge.getVulkanGpuCount() }.getOrDefault(0) }
-            val vulkanGpuName = remember(vulkanGpuCount) {
-                if (vulkanGpuCount > 0) {
-                    runCatching { NativeBridge.getVulkanGpuName(0) }.getOrDefault(null)?.takeIf { it.isNotBlank() }
-                } else {
-                    null
-                }
-            }
-            // "Actually used" = the live test-load below succeeded for this engine, not just
-            // that a GPU exists — a device can have a Vulkan GPU that still rejects the model.
-            val gpuActuallyUsed = state.aiModelReady
-
-            // Collapsed by default: this card is read-only diagnostic info (the
-            // card body itself says "nothing here is user-editable anymore"), so
-            // it doesn't need to compete for attention with the actionable model
-            // picker cards above. The subtitle still shows the one thing most
-            // people actually want to glance at — whether the GPU is in use.
-            CollapsibleSection(
-                title = "Compute — $activeEngineLabel",
-                subtitle = if (gpuActuallyUsed) "GPU in use" else "GPU idle — tap for details",
-            ) {
-            Text(
-                text = "The ncnn interpolator is Vulkan-GPU-only on this build — there's no " +
-                    "NPU or CPU compute path to pick, so nothing here is user-editable anymore. " +
-                    "This has no effect on the Lossless.dll pipeline above, which always runs " +
-                    "on the GPU too. RIFE and IFRNet load onto the GPU independently, so " +
-                    "switching the engine above doesn't change the status below for the other one.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconBadge(
-                    icon = if (gpuActuallyUsed) Icons.Filled.CheckCircle else Icons.Filled.Error,
-                    tint = if (gpuActuallyUsed) {
-                        LsfgStatusGood
-                    } else if (vulkanGpuCount > 0) {
-                        LsfgStatusWarn
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
-                    size = 40.dp,
-                )
-                Spacer(Modifier.size(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = vulkanGpuName
-                            ?: if (vulkanGpuCount > 0) "Vulkan GPU (name unavailable)" else "No Vulkan GPU detected",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = when {
-                            gpuActuallyUsed -> "In use — $activeEngineLabel is running on this GPU right now."
-                            vulkanGpuCount > 0 -> "Not in use — GPU detected but $activeEngineLabel hasn't " +
-                                "loaded onto it (see the model status card above)."
-                            else -> "Not in use — $activeEngineLabel has nowhere to run without a Vulkan GPU."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            }
-        }
-
         } // framegenBackend == NCNN_AI
 
         DeviceInfoCard()
@@ -904,33 +819,4 @@ private fun DeviceInfoCard() {
         runCatching { NativeBridge.getVulkanGpuName(0) }.getOrDefault(null)?.takeIf { it.isNotBlank() }
     }
 
-    CollapsibleSection(
-        title = "Device / GPU",
-        subtitle = gpuName ?: "Tap for device details",
-    ) {
-        Text(
-            text = "Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}) · Vulkan $vulkanApiVersion",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "GPU: ${gpuName ?: "unknown"} ($gpuDeviceType, $gpuVendor)",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = "Driver $gpuDriverVersion · GPU memory ~" +
-                (if (gpuVramMb >= 0) "$gpuVramMb MiB" else "unknown"),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "AI compute is hard-locked to Vulkan GPU. CPU telemetry, CPU affinity and CPU inference paths are not part of this build.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
 }

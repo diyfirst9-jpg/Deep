@@ -305,6 +305,18 @@ class CaptureEngine(
     @Volatile
     var lowLatencyCapture: Boolean = false
 
+    /**
+     * Non-low-latency ImageReader queue depth. Lowered from the original
+     * hardcoded 5 to 3 to cut idle buffer memory — see the comment at the
+     * call site in [setLsfgMode]. Exposed as a var (not a constant) so a
+     * future low-memory device profile can drop it further (down to 2) if
+     * 3 still proves too heavy, without touching the allocation logic.
+     * Must be >= 2 for acquireNextImage() to have room to pipeline at all.
+     */
+    @Volatile
+    var lsfgQueueDepth: Int = 3
+        set(value) { field = value.coerceAtLeast(2) }
+
     @Synchronized
     fun setLsfgMode(width: Int, height: Int) {
         // Android 14+ treats each MediaProjection token as single-use for
@@ -325,12 +337,14 @@ class CaptureEngine(
         val reader = ImageReader.newInstance(
             width, height, PixelFormat.RGBA_8888,
             /* maxImages */
-            // Default: keep a slightly deeper queue than the mirror path so we can
-            // preserve consecutive captures for framegen instead of constantly
-            // collapsing to the latest frame during fast camera motion. Low-latency
-            // mode trades that continuity for a shallower queue and
-            // acquireLatestImage() below, which drops any buffered backlog.
-            if (lowLatency) 2 else 5,
+            // Reduced from the original 5/2 split: each buffered image at full
+            // display resolution (RGBA8888) is several MB, so the queue depth is
+            // real, measurable RAM — 5 buffers at 1080x2400 is ~52MB just for this
+            // queue. 3 still gives the pipeline a couple of frames of slack to
+            // preserve temporal continuity for framegen without paying for two
+            // buffers' worth of memory that mostly sit idle between captures.
+            // Low-latency mode keeps its existing shallow queue (already minimal).
+            if (lowLatency) 2 else lsfgQueueDepth,
             android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
                     android.hardware.HardwareBuffer.USAGE_GPU_COLOR_OUTPUT
         )

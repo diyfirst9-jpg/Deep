@@ -26,21 +26,24 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
@@ -48,8 +51,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.ViewAgenda
-import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -122,6 +125,33 @@ private data class LaunchableApp(
     val isGame: Boolean,
 )
 
+// Icons are only ever shown at 54-58dp in the launcher list/grid. Raw
+// adaptive-icon drawables from loadIcon() can rasterize much larger than
+// that (themed/adaptive layers are commonly 432x432 or more on modern
+// devices), and loadLaunchableApps() decodes one for every launchable app
+// on the device up front — with 150-300 apps installed that's tens to
+// low hundreds of MB of bitmap memory held for the app's whole lifetime.
+// Downsampling each icon to a small fixed size here cuts that by roughly
+// an order of magnitude with no visible quality loss at launcher-tile size.
+private const val ICON_CACHE_PX = 128
+
+private fun Drawable.toDownsampledBitmapDrawable(context: Context): Drawable {
+    val bitmap = try {
+        android.graphics.Bitmap.createBitmap(
+            ICON_CACHE_PX,
+            ICON_CACHE_PX,
+            android.graphics.Bitmap.Config.ARGB_8888,
+        ).also { bmp ->
+            val canvas = android.graphics.Canvas(bmp)
+            setBounds(0, 0, ICON_CACHE_PX, ICON_CACHE_PX)
+            draw(canvas)
+        }
+    } catch (_: Throwable) {
+        return this
+    }
+    return android.graphics.drawable.BitmapDrawable(context.resources, bitmap)
+}
+
 private fun loadLaunchableApps(context: Context): List<LaunchableApp> {
     val pm = context.packageManager
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -133,7 +163,7 @@ private fun loadLaunchableApps(context: Context): List<LaunchableApp> {
             LaunchableApp(
                 label = ai.loadLabel(pm).toString().ifBlank { ai.packageName },
                 packageName = ai.packageName,
-                icon = ai.loadIcon(pm),
+                icon = ai.loadIcon(pm).toDownsampledBitmapDrawable(context),
                 isGame = ai.category == ApplicationInfo.CATEGORY_GAME,
             )
         }
@@ -142,14 +172,39 @@ private fun loadLaunchableApps(context: Context): List<LaunchableApp> {
         .toList()
 }
 
-private fun requestUninstall(context: Context, packageName: String) {
-    val intent = Intent(Intent.ACTION_DELETE, Uri.fromParts("package", packageName, null))
-    context.startActivity(intent)
-}
-
 private fun openAppInfo(context: Context, packageName: String) {
     val intent = Intent(ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
     context.startActivity(intent)
+}
+
+/**
+ * Refresh rates the device's default display can actually run at, read from
+ * its [Display.Mode] list (all modes share resolution class but differ in
+ * Hz on most phones). Falls back to just the display's current refresh
+ * rate if the mode list can't be read for some reason.
+ */
+private fun getSupportedRefreshRates(context: Context): List<Int> {
+    val display = runCatching {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
+        @Suppress("DEPRECATION")
+        wm?.defaultDisplay
+    }.getOrNull() ?: return emptyList()
+
+    val fromModes = runCatching {
+        display.supportedModes
+            ?.map { it.refreshRate }
+            .orEmpty()
+    }.getOrElse { emptyList() }
+
+    val rates = fromModes.ifEmpty {
+        runCatching { listOf(display.refreshRate) }.getOrElse { emptyList() }
+    }
+
+    return rates
+        .map { Math.round(it) }
+        .filter { it > 0 }
+        .distinct()
+        .sorted()
 }
 
 private const val TAG_PRE_LAUNCH_DISPLAY = "LsfgPreLaunchDisplay"
@@ -212,8 +267,7 @@ fun GameLauncherScreen(nav: NavHostController) {
     var apps by remember { mutableStateOf(emptyList<LaunchableApp>()) }
     var showAll by remember { mutableStateOf(true) }
 
-    // How app icons are arranged: single-column list, icon grid, or a
-    // horizontally scrolling row of large tiles (Nintendo Switch style).
+    // How app icons are arranged: single-column list or icon grid.
     // Persisted so the choice sticks across app restarts.
     var layoutMode by remember { mutableStateOf(LauncherLayoutStore.load(context)) }
     var showLayoutMenu by remember { mutableStateOf(false) }
@@ -322,7 +376,6 @@ fun GameLauncherScreen(nav: NavHostController) {
                             when (layoutMode) {
                                 LauncherLayout.LIST -> Icons.Filled.ViewAgenda
                                 LauncherLayout.GRID -> Icons.Filled.GridView
-                                LauncherLayout.SWITCH_HORIZONTAL -> Icons.Filled.ViewCarousel
                             },
                             contentDescription = stringResource(R.string.cd_layout_mode),
                         )
@@ -343,15 +396,6 @@ fun GameLauncherScreen(nav: NavHostController) {
                             onClick = {
                                 layoutMode = LauncherLayout.GRID
                                 LauncherLayoutStore.save(context, LauncherLayout.GRID)
-                                showLayoutMenu = false
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.layout_switch)) },
-                            leadingIcon = { Icon(Icons.Filled.ViewCarousel, contentDescription = null) },
-                            onClick = {
-                                layoutMode = LauncherLayout.SWITCH_HORIZONTAL
-                                LauncherLayoutStore.save(context, LauncherLayout.SWITCH_HORIZONTAL)
                                 showLayoutMenu = false
                             },
                         )
@@ -383,6 +427,12 @@ fun GameLauncherScreen(nav: NavHostController) {
                     label = { Text(stringResource(R.string.filter_all_apps_count, apps.size)) },
                     leadingIcon = { Icon(Icons.Filled.Apps, null, Modifier.size(18.dp)) },
                 )
+                Spacer(Modifier.weight(1f))
+                AssistChip(
+                    onClick = { nav.navigate(Routes.PROFILE) },
+                    label = { Text(stringResource(R.string.profile_button)) },
+                    leadingIcon = { Icon(Icons.Filled.AccountCircle, null, Modifier.size(18.dp)) },
+                )
             }
 
             // Crossfade keyed on showAll: the "Games"/"All apps" chips swap the
@@ -406,7 +456,7 @@ fun GameLauncherScreen(nav: NavHostController) {
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             items(listForTab, key = { it.packageName }) { app ->
-                                LauncherAppRow(app = app) {
+                                LauncherAppRow(nav = nav, app = app) {
                                     scope.launch { launchApp(app) }
                                 }
                             }
@@ -419,18 +469,7 @@ fun GameLauncherScreen(nav: NavHostController) {
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             items(listForTab, key = { it.packageName }) { app ->
-                                LauncherAppTile(app = app) {
-                                    scope.launch { launchApp(app) }
-                                }
-                            }
-                        }
-                        LauncherLayout.SWITCH_HORIZONTAL -> LazyRow(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(start = 12.dp, end = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            items(listForTab, key = { it.packageName }) { app ->
-                                LauncherSwitchTile(app = app) {
+                                LauncherAppTile(nav = nav, app = app) {
                                     scope.launch { launchApp(app) }
                                 }
                             }
@@ -452,8 +491,8 @@ fun GameLauncherScreen(nav: NavHostController) {
 
 /**
  * Long-press context menu shared by every layout (list row, grid tile,
- * Switch-style tile): settings, app info, uninstall — the same trio a
- * regular Android home screen shows on long-press.
+ * Switch-style tile): settings, app info — the same pair a regular
+ * Android home screen shows on long-press, minus uninstall.
  */
 @Composable
 private fun AppQuickActionsMenu(
@@ -461,7 +500,6 @@ private fun AppQuickActionsMenu(
     onDismiss: () -> Unit,
     onSettings: () -> Unit,
     onAppInfo: () -> Unit,
-    onUninstall: () -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         DropdownMenuItem(
@@ -474,16 +512,12 @@ private fun AppQuickActionsMenu(
             leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
             onClick = onAppInfo,
         )
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.action_uninstall)) },
-            leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
-            onClick = onUninstall,
-        )
     }
 }
 
 @Composable
 private fun LauncherAppRow(
+    nav: NavHostController,
     app: LaunchableApp,
     onLaunch: () -> Unit,
 ) {
@@ -548,12 +582,12 @@ private fun LauncherAppRow(
         onDismiss = { showMenu = false },
         onSettings = { showMenu = false; showSettings = true },
         onAppInfo = { showMenu = false; openAppInfo(context, app.packageName) },
-        onUninstall = { showMenu = false; requestUninstall(context, app.packageName) },
     )
     }
 
     if (showSettings) {
         AppCardSettingsDialog(
+            nav = nav,
             packageName = app.packageName,
             label = app.label,
             initial = profile,
@@ -568,6 +602,7 @@ private fun LauncherAppRow(
 
 @Composable
 private fun LauncherAppTile(
+    nav: NavHostController,
     app: LaunchableApp,
     onLaunch: () -> Unit,
 ) {
@@ -619,90 +654,12 @@ private fun LauncherAppTile(
             onDismiss = { showMenu = false },
             onSettings = { showMenu = false; showSettings = true },
             onAppInfo = { showMenu = false; openAppInfo(context, app.packageName) },
-            onUninstall = { showMenu = false; requestUninstall(context, app.packageName) },
         )
     }
 
     if (showSettings) {
         AppCardSettingsDialog(
-            packageName = app.packageName,
-            label = app.label,
-            initial = profile,
-            onDismiss = { showSettings = false },
-            onSaved = {
-                profile = it
-                showSettings = false
-            },
-        )
-    }
-}
-
-/**
- * Big horizontal tile, styled after the Nintendo Switch home menu: a tall
- * rounded card with a large icon and label, laid out in a swipeable
- * [LazyRow] instead of a vertical list.
- */
-@Composable
-private fun LauncherSwitchTile(
-    app: LaunchableApp,
-    onLaunch: () -> Unit,
-) {
-    val context = LocalContext.current
-    var showSettings by remember { mutableStateOf(false) }
-    var showMenu by remember { mutableStateOf(false) }
-    var profile by remember { mutableStateOf(AppDisplayProfileStore.load(context, app.packageName)) }
-
-    Box {
-        Column(
-            modifier = Modifier
-                .width(174.dp)
-                .height(206.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(24.dp))
-                .combinedClickable(
-                    onClick = onLaunch,
-                    onLongClick = { showMenu = true },
-                )
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Image(
-                painter = rememberAsyncImagePainter(app.icon),
-                contentDescription = null,
-                modifier = Modifier
-                    .size(94.dp)
-                    .clip(RoundedCornerShape(22.dp)),
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                app.label,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            if (profile.enabled) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${profile.percent}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = LsfgPrimary,
-                )
-            }
-        }
-        AppQuickActionsMenu(
-            expanded = showMenu,
-            onDismiss = { showMenu = false },
-            onSettings = { showMenu = false; showSettings = true },
-            onAppInfo = { showMenu = false; openAppInfo(context, app.packageName) },
-            onUninstall = { showMenu = false; requestUninstall(context, app.packageName) },
-        )
-    }
-
-    if (showSettings) {
-        AppCardSettingsDialog(
+            nav = nav,
             packageName = app.packageName,
             label = app.label,
             initial = profile,
@@ -717,28 +674,9 @@ private fun LauncherSwitchTile(
 
 private const val TAG_APP_CARD_SETTINGS = "LsfgAppCardSettings"
 
-private fun startShizukuDisplayPermissionFlow(context: Context, scope: kotlinx.coroutines.CoroutineScope) {
-    if (!ShizukuDisplayPermission.isShizukuAvailable()) {
-        if (ShizukuDisplayPermission.needsShizukuAppPermission()) {
-            ShizukuDisplayPermission.requestShizukuPermission()
-            Toast.makeText(context, context.getString(R.string.toast_allow_shizuku_first), Toast.LENGTH_LONG).show()
-        } else {
-            Toast.makeText(context, context.getString(R.string.toast_shizuku_not_running), Toast.LENGTH_SHORT).show()
-        }
-        return
-    }
-    scope.launch {
-        val ok = ShizukuDisplayPermission.grantWriteSecureSettings(context)
-        Toast.makeText(
-            context,
-            if (ok) context.getString(R.string.toast_grant_write_secure_success) else context.getString(R.string.toast_grant_write_secure_failure),
-            Toast.LENGTH_LONG,
-        ).show()
-    }
-}
-
 @Composable
 private fun AppCardSettingsDialog(
+    nav: NavHostController,
     packageName: String,
     label: String,
     initial: AppDisplayProfile,
@@ -752,42 +690,48 @@ private fun AppCardSettingsDialog(
     var clean by remember { mutableStateOf(initial.dynamicClean) }
     var noAnimations by remember { mutableStateOf(initial.disableAnimations) }
     var keepAwake by remember { mutableStateOf(initial.keepAwake) }
+    var fixedPerfMode by remember { mutableStateOf(initial.fixedPerformanceMode) }
+    var dozeWhitelist by remember { mutableStateOf(initial.dozeWhitelist) }
+    var forceStopBg by remember { mutableStateOf(initial.forceStopBackground) }
+    var refreshRateHz by remember { mutableStateOf(initial.lockRefreshRateHz) }
+    var wifiLock by remember { mutableStateOf(initial.wifiHighPerfLock) }
     var info by remember { mutableStateOf<PhysicalDisplayInfo?>(null) }
+    val supportedHz = remember { getSupportedRefreshRates(context) }
+    val refreshRateOptions = remember(supportedHz) { listOf(0) + supportedHz }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.dialog_app_settings_title, label)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 val secureGranted = ShizukuDisplayPermission.hasWriteSecureSettings(context)
-                val shizukuReady = ShizukuDisplayPermission.isShizukuAvailable()
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    tonalElevation = 3.dp,
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            when {
-                                secureGranted -> stringResource(R.string.status_write_secure_ready)
-                                shizukuReady -> stringResource(R.string.status_shizuku_ready)
-                                ShizukuDisplayPermission.needsShizukuAppPermission() -> stringResource(R.string.status_need_shizuku_permission)
-                                else -> stringResource(R.string.status_no_permission)
-                            },
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Button(onClick = { startShizukuDisplayPermissionFlow(context, scope) }) {
-                            Text(if (shizukuReady) stringResource(R.string.action_request_via_shizuku) else stringResource(R.string.action_connect_shizuku))
+                // Shizuku/WRITE_SECURE_SETTINGS granting itself now lives only
+                // on the single Setup screen — this dialog just flags it here
+                // when it's still missing, instead of duplicating the flow.
+                if (!secureGranted) {
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        tonalElevation = 3.dp,
+                    ) {
+                        Column(
+                            Modifier
+                                .padding(14.dp)
+                                .clickable { nav.navigate(Routes.SETUP) },
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(stringResource(R.string.status_no_permission), fontWeight = FontWeight.Bold)
+                            Text(
+                                "Go to Setup to grant it",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
-                }
-                if (!secureGranted) {
-                    Text(AdbDisplayController.grantCommand(), style = MaterialTheme.typography.bodySmall)
-                    val adbCopiedMsg = stringResource(R.string.toast_adb_copied)
-                    Button(onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("ADB grant", AdbDisplayController.grantCommand()))
-                        Toast.makeText(context, adbCopiedMsg, Toast.LENGTH_SHORT).show()
-                    }) { Text(stringResource(R.string.action_copy_adb_command)) }
                 }
                 if (profile.originalWidth > 0) {
                     Text(stringResource(R.string.display_original_format, profile.originalWidth, profile.originalHeight, profile.originalDpi))
@@ -818,6 +762,83 @@ private fun AppCardSettingsDialog(
                         Text(stringResource(R.string.keep_awake_title), fontWeight = FontWeight.SemiBold)
                     }
                     Switch(checked = keepAwake, onCheckedChange = { keepAwake = it })
+                }
+                val shizukuReady = ShizukuDisplayPermission.isShizukuAvailable()
+                Text(
+                    "Performance (requires Shizuku)",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                if (!shizukuReady) {
+                    Text(
+                        "Shizuku is not connected — these won't apply until it is.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Fixed Performance Mode", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Locks CPU/GPU clocks at max for the session",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = fixedPerfMode, onCheckedChange = { fixedPerfMode = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Doze Whitelist", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Keeps background services (voice chat, etc.) from being throttled",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = dozeWhitelist, onCheckedChange = { dozeWhitelist = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Force-Stop Background Apps", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Kills other installed apps outright before launch",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = forceStopBg, onCheckedChange = { forceStopBg = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Wi-Fi High-Perf Lock", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Stops the Wi-Fi radio from sleeping between packets (reduces ping spikes, not baseline ping)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = wifiLock, onCheckedChange = { wifiLock = it })
+                }
+                Text("Lock Refresh Rate", fontWeight = FontWeight.SemiBold)
+                if (supportedHz.isEmpty()) {
+                    Text(
+                        "Couldn't read this device's supported refresh rates.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    refreshRateOptions.forEach { hz ->
+                        FilterChip(
+                            selected = refreshRateHz == hz,
+                            onClick = { refreshRateHz = hz },
+                            label = { Text(if (hz == 0) "Auto" else "${hz}Hz") },
+                        )
+                    }
                 }
                 Text(
                     stringResource(R.string.limit_background_title),
@@ -854,6 +875,11 @@ private fun AppCardSettingsDialog(
                     maxBackgroundApps = 1,
                     disableAnimations = noAnimations,
                     keepAwake = keepAwake,
+                    fixedPerformanceMode = fixedPerfMode,
+                    dozeWhitelist = dozeWhitelist,
+                    forceStopBackground = forceStopBg,
+                    lockRefreshRateHz = refreshRateHz,
+                    wifiHighPerfLock = wifiLock,
                 ).also { AppDisplayProfileStore.save(context, packageName, it) }
                 onSaved(saved)
             }) { Text(stringResource(R.string.action_save)) }

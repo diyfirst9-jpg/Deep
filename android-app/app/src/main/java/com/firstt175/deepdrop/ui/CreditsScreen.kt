@@ -2,7 +2,6 @@ package com.firstt175.deepdrop.ui
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -44,10 +43,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
-import coil.ImageLoader
 import coil.compose.AsyncImage
-import coil.decode.GifDecoder
-import coil.decode.ImageDecoderDecoder
 import coil.request.ImageRequest
 import com.firstt175.deepdrop.BuildConfig
 import com.firstt175.deepdrop.R
@@ -310,26 +306,13 @@ private fun CreditRow(
     gifUrl: String? = null,
 ) {
     val ctx = LocalContext.current
-    val gifLoader = remember(gifUrl) {
-        if (gifUrl == null) return@remember null
-        ImageLoader.Builder(ctx)
-            .components {
-                if (Build.VERSION.SDK_INT >= 28) {
-                    add(ImageDecoderDecoder.Factory())
-                } else {
-                    add(GifDecoder.Factory())
-                }
-            }
-            .build()
-    }
 
     LsfgCard(onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             when {
-                gifUrl != null && gifLoader != null -> {
+                gifUrl != null -> {
                     AsyncImage(
                         model = ImageRequest.Builder(ctx).data(gifUrl).build(),
-                        imageLoader = gifLoader,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 // Only ever compiled/linked when the ncnn Android prebuilt SDK was found at
@@ -8,6 +9,37 @@
 // lsfg_jni.cpp must guard every use of this header behind `#ifdef LSFG_HAVE_NCNN`.
 
 namespace lsfg_android {
+
+// Guards ncnn::Net load()/unload() (which internally call
+// register_custom_layer + create_pipeline/destroy_pipeline — i.e. SPIR-V
+// compilation and VkPipeline creation/teardown) across EVERY
+// NcnnInterpolator/IfrnetInterpolator instance in the process, not just
+// within one instance.
+//
+// There are two independent instances that can be alive at once, both
+// bound to the same Vulkan device (vulkanDeviceIndex -1 -> device 0 in
+// both call sites): the settings-screen "test this model" instance
+// (g_ncnnInterpolator/g_ifrnetInterpolator in lsfg_jni.cpp) and the live
+// session's instance (g.ai/g.aiIfrnet in lsfg_render_loop.cpp). Nothing
+// previously stopped a settings-screen load() — compiling a new custom
+// layer pipeline via create_pipeline() — from running concurrently with
+// the live session's g.ai submitting per-frame Vulkan compute work on
+// that same shared ncnn::VulkanDevice. That race is a credible cause of
+// the SIGBUS crashes seen with fault addresses like 0x0000000100000001
+// (a garbage/misaligned pointer, not a real heap address) landing inside
+// this .so shortly after a load() completed successfully — i.e. driver-
+// level corruption from the concurrent access, not a bug in the load()
+// call that happened to be running.
+//
+// interpolate() itself is NOT guarded by this: concurrent inference from
+// two Net instances sharing one VulkanDevice is the normal, supported
+// ncnn usage pattern. Only load()/unload() (pipeline creation/teardown)
+// need to be serialized against each other, process-wide.
+//
+// Recursive because load() unconditionally calls unload() first (reload
+// path) and both take this same lock — a plain std::mutex would
+// self-deadlock on that first line of load().
+std::recursive_mutex &gpuLoadMutex();
 
 // Error codes returned to Kotlin via JNI (mirrors the style of
 // android_shader_loader.hpp's kErr* constants — keep 0 == ok).

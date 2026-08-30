@@ -138,13 +138,11 @@
 
 
     <string name="crash_dialog_title">LSFG-Android+ ขัดข้องในการทำงานครั้งล่าสุด</string>
-    <string name="crash_dialog_body">มีการบันทึกรายงานไว้แล้ว คุณสามารถแชร์ให้ผู้พัฒนาเพื่อช่วยแก้ไขปัญหาได้ ข้อมูลอุปกรณ์และส่วนขยายถูกรวมไว้ให้แล้ว — ไม่มีข้อมูลส่วนตัวแนบไปด้วย</string>
-    <string name="crash_dialog_share">แชร์รายงาน</string>
+    <string name="crash_dialog_body">มีการบันทึกรายงานไว้ในเครื่องแล้ว ข้อมูลจะอยู่ในเครื่องเท่านั้น — คุณสามารถดูได้ในแอป</string>
     <string name="crash_dialog_dismiss">ปิด</string>
     <string name="crash_dialog_view">ดูรายละเอียด</string>
-    <string name="crash_export_log">ส่งออกล็อกวินิจฉัย</string>
+    <string name="crash_export_log">ดูล็อกวินิจฉัย</string>
     <string name="battery_exempt_menu_item">ยกเว้นการปรับแบตเตอรี่</string>
-    <string name="crash_export_none">ยังไม่มีล็อกวินิจฉัย — โปรดรันเซสชันก่อน</string>
     <string name="gamepad_hint_select">เลือก</string>
     <string name="gamepad_hint_back">ย้อนกลับ</string>
     <string name="gamepad_hint_switch_tab">สลับแท็บ</string>
@@ -154,7 +152,6 @@
     <string name="toast_no_launch_button">ไม่พบปุ่มเปิดสำหรับ %1$s</string>
     <string name="layout_list">รายการ</string>
     <string name="layout_grid">ตาราง</string>
-    <string name="layout_switch">แนวนอน (Switch)</string>
     <string name="ready_to_launch_title">พร้อมเปิด</string>
     <string name="ready_to_launch_subtitle">พบแอป %1$d รายการ • เกม %2$d รายการ • เปิดได้โดยตรงจาก Deepdrop</string>
     <string name="filter_games_count">เกม %1$d</string>
@@ -204,5 +201,39 @@
     <string name="credits_donate_eyebrow">บริจาค</string>
     <string name="credits_donate_title">สนับสนุนผู้พัฒนา</string>
     <string name="credits_donate_message">ขอบคุณที่สนับสนุนนะครับ เงินทุกบาทของคุณจะไม่สูญเปล่า — ถูกนำไปใช้เป็นทุนการศึกษาให้กับน้องๆ ครับ</string>
+
+    <!-- Device profile screen -->
+    <string name="profile_title">โปรไฟล์อุปกรณ์</string>
+    <string name="profile_button">โปรไฟล์</string>
+    <string name="profile_section_device">อุปกรณ์</string>
+    <string name="profile_model">รุ่นเครื่อง</string>
+    <string name="profile_android">Android</string>
+    <string name="profile_soc">ชิปเซ็ต</string>
+    <string name="profile_abi">ABI</string>
+    <string name="profile_section_access">สิทธิ์การเข้าถึง</string>
+    <string name="profile_root">Root</string>
+    <string name="profile_shizuku">Shizuku</string>
+    <string name="profile_section_cpu">ซีพียู</string>
+    <string name="profile_cpu_load">โหลด</string>
+    <string name="profile_cpu_temp">อุณหภูมิ</string>
+    <string name="profile_cpu_cores">จำนวนคอร์</string>
+    <string name="profile_value_na">ไม่มีข้อมูล</string>
+    <string name="profile_cluster_freq_format">%1$d MHz (สูงสุด %2$d)</string>
+    <string name="profile_cluster_freq_max_only_format">สูงสุด %1$d MHz</string>
+    <string name="profile_section_memory">หน่วยความจำ</string>
+    <string name="profile_ram_used">ใช้ไป</string>
+    <string name="profile_ram_free">เหลือ</string>
+    <string name="profile_ram_total">ทั้งหมด</string>
+    <string name="profile_section_gpu">GPU / Vulkan</string>
+    <string name="profile_gpu_name">GPU</string>
+    <string name="profile_gpu_vendor">ผู้ผลิต</string>
+    <string name="profile_gpu_type">ประเภท</string>
+    <string name="profile_gpu_driver">ไดรเวอร์</string>
+    <string name="profile_gpu_vram">VRAM (โดยประมาณ)</string>
+    <string name="profile_vulkan_api">Vulkan API</string>
+    <string name="profile_section_display">หน้าจอ</string>
+    <string name="profile_display_resolution">ความละเอียด</string>
+    <string name="profile_display_refresh">อัตรารีเฟรช</string>
+    <string name="profile_display_density">ความหนาแน่นจุดภาพ</string>
 
 </resources>
