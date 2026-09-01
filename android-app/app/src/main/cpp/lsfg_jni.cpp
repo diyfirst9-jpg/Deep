@@ -319,18 +319,6 @@ Java_com_firstt175_deepdrop_session_NativeBridge_setBypass(
 
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_firstt175_deepdrop_session_NativeBridge_setUpscaleSharpenEnabled(
-        JNIEnv * /*env*/, jobject /*thiz*/, jboolean enabled) {
-    lsfg_android::setUpscaleSharpenEnabled(enabled == JNI_TRUE);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_firstt175_deepdrop_session_NativeBridge_setUpscaleSharpenAmount(
-        JNIEnv * /*env*/, jobject /*thiz*/, jfloat amount) {
-    lsfg_android::setUpscaleSharpenAmount(amount);
-}
-
-extern "C" JNIEXPORT void JNICALL
 Java_com_firstt175_deepdrop_session_NativeBridge_setPacingParams(
         JNIEnv * /*env*/, jobject /*thiz*/,
         jfloat emaAlpha, jfloat outlierRatio) {

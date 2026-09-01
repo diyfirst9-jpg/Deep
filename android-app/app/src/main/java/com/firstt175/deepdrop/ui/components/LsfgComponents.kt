@@ -1,8 +1,5 @@
 package com.firstt175.deepdrop.ui.components
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,7 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,13 +80,8 @@ fun LsfgCard(
                     .background(accentColor.copy(alpha = 0.85f)),
             )
         }
-        // animateContentSize() here is app-wide: every LsfgCard (status
-        // messages, conditional rows, expanding lists) gets a smooth resize
-        // instead of an instant snap, with no changes needed at call sites.
         Column(
-            Modifier
-                .padding(contentPadding)
-                .animateContentSize(),
+            Modifier.padding(contentPadding),
             content = content,
         )
     }
@@ -191,13 +182,8 @@ fun StepCard(
 ) {
     val done = status == StatusTone.Good
     val badgeAccent = if (emphasized) LsfgPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-    // Steps flip done/not-done as the user completes each wizard step; fading
-    // the badge color instead of snapping it makes that feel like progress
-    // rather than a glitch.
-    val badgeBg by animateColorAsState(
-        targetValue = if (done) LsfgStatusGood.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-        label = "stepBadgeBg",
-    )
+    // Static state colors avoid a per-card animation clock and extra draw work.
+    val badgeBg = if (done) LsfgStatusGood.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerHigh
     LsfgCard(
         modifier = modifier.fillMaxWidth(),
         onClick = onClick,
@@ -401,14 +387,13 @@ fun CollapsibleSection(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by remember { mutableStateOf(startExpanded) }
-    val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
 
     // Only the header row is clickable — not the whole card. Wiring onClick
     // onto LsfgCard itself would make every tap inside the expanded content
     // (e.g. tapping a line of body text between two sliders) also toggle
     // the section shut, which fights the user while they're reading it.
     LsfgCard(modifier = modifier) {
-        Column(modifier = Modifier.animateContentSize()) {
+        Column {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -427,7 +412,7 @@ fun CollapsibleSection(
                     imageVector = Icons.Filled.ExpandMore,
                     contentDescription = if (expanded) "Collapse" else "Expand",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.rotate(rotation),
+                    modifier = Modifier.size(24.dp),
                 )
             }
             if (expanded) {

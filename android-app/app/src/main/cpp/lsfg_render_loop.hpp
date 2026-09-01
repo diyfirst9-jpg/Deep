@@ -146,12 +146,6 @@ uint32_t getProfileWindowNs(int64_t *out, uint32_t cap);
 // blits the latest captured frame straight to the output surface — useful for
 // A/B comparisons against the generated output. Safe to call from any thread.
 void setBypass(bool bypass);
-// CAS-lite compute upscale-sharpen, fused into the scaled-output blit path
-// (no-ops if the surface/device don't support STORAGE_BIT swapchain images —
-// see UpscaleSharpen in lsfg_render_loop.cpp). Safe to call at any time; the
-// toggle is read lock-free on the hot path.
-void setUpscaleSharpenEnabled(bool enabled);
-void setUpscaleSharpenAmount(float amount); // 0..1, clamped
 void setPresentMode(int32_t mode);
 // Hot-apply pacing statistics parameters. No software VSync/frame limiter is used.
 void setPacingParams(float emaAlpha, float outlierRatio);

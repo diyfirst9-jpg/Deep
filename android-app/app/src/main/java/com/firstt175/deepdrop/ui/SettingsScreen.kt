@@ -73,7 +73,7 @@ import com.firstt175.deepdrop.ui.theme.LsfgStatusGood
 import com.firstt175.deepdrop.ui.theme.LsfgStatusWarn
 
 @Composable
-fun HomeScreen(nav: NavHostController) {
+fun SettingsScreen(nav: NavHostController) {
     val ctx = LocalContext.current
     val prefs = remember { LsfgPreferences(ctx) }
     val state by produceConfigState(prefs).collectAsState()

@@ -667,17 +667,6 @@ class LsfgForegroundService : Service() {
                         activeBackendLabel = backendLabel(cfg, ai)
                         pushStreamInfo()
                         cap?.setLsfgNativeInputEnabled(true)
-                        // Compute upscale-sharpen only makes sense when the render
-                        // loop is actually scaling up (scaledW/H < presentation
-                        // size) — see UpscaleSharpen's isScaled check on the native
-                        // side, which no-ops otherwise anyway, but no reason to even
-                        // flip the toggle on for a 1:1 session.
-                        runCatching {
-                            NativeBridge.setUpscaleSharpenAmount(cfg.upscaleSharpenAmount)
-                            NativeBridge.setUpscaleSharpenEnabled(
-                                cfg.upscaleSharpenEnabled && (scaledW != presentationW || scaledH != presentationH)
-                            )
-                        }.onFailure { LsfgLog.w(TAG, "setUpscaleSharpenEnabled failed", it) }
                         if (isPrivilegedCapture) {
                             // Frame-gen is active and its native context was sized to
                             // scaledW/scaledH (see initContext above) — the privileged
@@ -1158,12 +1147,6 @@ class LsfgForegroundService : Service() {
                     } else {
                         LsfgLog.w(TAG, "reinit: no cached surface to re-attach")
                     }
-                    runCatching {
-                        NativeBridge.setUpscaleSharpenAmount(cfg.upscaleSharpenAmount)
-                        NativeBridge.setUpscaleSharpenEnabled(
-                            cfg.upscaleSharpenEnabled && (scaledW != presentationW || scaledH != presentationH)
-                        )
-                    }.onFailure { LsfgLog.w(TAG, "setUpscaleSharpenEnabled (re-init) failed", it) }
                     if (rc == 0) {
                         activeRenderW = presentationW
                         activeRenderH = presentationH

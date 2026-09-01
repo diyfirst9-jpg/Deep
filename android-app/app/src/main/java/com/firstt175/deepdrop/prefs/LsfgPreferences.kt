@@ -40,16 +40,6 @@ data class LsfgConfig(
      * post-processing pass — at the cost of a softer final image.
      */
     val renderResolutionScale: Float,
-    /**
-     * Toggle for the CAS-lite compute upscale-sharpen pass (see
-     * NativeBridge.setUpscaleSharpenEnabled). Only visible/effective when
-     * [renderResolutionScale] < 1.0 — there's nothing to sharpen-upscale at
-     * native resolution. Off by default; silently a no-op on devices whose
-     * swapchain surface doesn't support STORAGE_BIT images.
-     */
-    val upscaleSharpenEnabled: Boolean,
-    /** Sharpen strength for the above, 0..1. Default 0.35. */
-    val upscaleSharpenAmount: Float,
     val legalAccepted: Boolean,
     val fpsCounterEnabled: Boolean,
     val frameGraphEnabled: Boolean,
@@ -241,8 +231,6 @@ class LsfgPreferences(ctx: Context) {
         captureSource = CaptureSource.fromPref(prefs.getString(KEY_CAPTURE_SOURCE, null)),
         lowLatencyCapture = prefs.getBoolean(KEY_LOW_LATENCY_CAPTURE, false),
         renderResolutionScale = prefs.getFloat(KEY_RENDER_RESOLUTION_SCALE, 0.9f).coerceIn(0.0f, 1.0f),
-        upscaleSharpenEnabled = prefs.getBoolean(KEY_UPSCALE_SHARPEN_ENABLED, false),
-        upscaleSharpenAmount = prefs.getFloat(KEY_UPSCALE_SHARPEN_AMOUNT, 0.35f).coerceIn(0.0f, 1.0f),
         legalAccepted = prefs.getBoolean(KEY_LEGAL, false),
         fpsCounterEnabled = prefs.getBoolean(KEY_FPS_COUNTER, false),
         frameGraphEnabled = prefs.getBoolean(KEY_FRAME_GRAPH, false),
@@ -302,11 +290,6 @@ class LsfgPreferences(ctx: Context) {
         prefs.edit().putBoolean(KEY_LOW_LATENCY_CAPTURE, value).apply()
     fun setRenderResolutionScale(value: Float) = prefs.edit()
         .putFloat(KEY_RENDER_RESOLUTION_SCALE, value.coerceIn(0.0f, 1.0f))
-        .apply()
-    fun setUpscaleSharpenEnabled(value: Boolean) =
-        prefs.edit().putBoolean(KEY_UPSCALE_SHARPEN_ENABLED, value).apply()
-    fun setUpscaleSharpenAmount(value: Float) = prefs.edit()
-        .putFloat(KEY_UPSCALE_SHARPEN_AMOUNT, value.coerceIn(0.0f, 1.0f))
         .apply()
     fun setLegalAccepted(value: Boolean) = prefs.edit().putBoolean(KEY_LEGAL, value).apply()
     fun setFpsCounterEnabled(value: Boolean) = prefs.edit().putBoolean(KEY_FPS_COUNTER, value).apply()
@@ -397,8 +380,6 @@ class LsfgPreferences(ctx: Context) {
         private const val KEY_CAPTURE_SOURCE = "capture_source"
         private const val KEY_LOW_LATENCY_CAPTURE = "low_latency_capture"
         private const val KEY_RENDER_RESOLUTION_SCALE = "render_resolution_scale"
-        private const val KEY_UPSCALE_SHARPEN_ENABLED = "upscale_sharpen_enabled"
-        private const val KEY_UPSCALE_SHARPEN_AMOUNT = "upscale_sharpen_amount"
         /**
          * Never let the *effective* capture/render size collapse to 0 pixels even
          * if the user drags the slider all the way to 0%. Applied only where the

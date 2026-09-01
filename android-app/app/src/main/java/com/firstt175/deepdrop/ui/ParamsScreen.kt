@@ -18,7 +18,6 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.automirrored.filled.ViewSidebar
 import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.HdrOn
@@ -75,7 +74,7 @@ import com.firstt175.deepdrop.ui.theme.LsfgStatusGood
 // ----------------------------------------------------------------------------------------
 
 // ----------------------------------------------------------------------------------------
-// Frame generation & pacing — embedded inline in the Settings screen (HomeScreen), not a
+// Frame generation & pacing — embedded inline in the Settings screen, not a
 // separate destination. [nav] is only used to jump to the DLL picker / Legal screen.
 // ----------------------------------------------------------------------------------------
 
@@ -256,38 +255,6 @@ fun FrameGenPacingSection(nav: NavHostController) {
                     refreshConfigState(prefs)
                 },
             )
-
-            // Only meaningful below native resolution — hidden at 100% since
-            // there's nothing to upscale (matches the native no-op check in
-            // LsfgForegroundService/UpscaleSharpen).
-            if (state.renderResolutionScale < 1f) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                ToggleRow(
-                    icon = Icons.Filled.AutoFixHigh,
-                    title = stringResource(R.string.param_upscale_sharpen),
-                    description = stringResource(R.string.param_upscale_sharpen_desc),
-                    checked = state.upscaleSharpenEnabled,
-                    onCheckedChange = {
-                        prefs.setUpscaleSharpenEnabled(it)
-                        refreshConfigState(prefs)
-                    },
-                )
-                if (state.upscaleSharpenEnabled) {
-                    ValueSlider(
-                        title = stringResource(R.string.param_upscale_sharpen_amount),
-                        valueDisplay = "${(state.upscaleSharpenAmount * 100f).toInt()}%",
-                        description = stringResource(R.string.param_upscale_sharpen_amount_desc),
-                        value = state.upscaleSharpenAmount,
-                        range = 0f..1f,
-                        steps = 19,
-                        leadingIcon = Icons.Filled.AutoFixHigh,
-                        onValueChange = {
-                            prefs.setUpscaleSharpenAmount(it)
-                            refreshConfigState(prefs)
-                        },
-                    )
-                }
-            }
 
             // Input FPS cap: throttles how many incoming capture frames are
             // admitted into the pipeline at all. Frames arriving faster than

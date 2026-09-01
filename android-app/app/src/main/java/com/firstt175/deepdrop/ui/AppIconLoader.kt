@@ -16,7 +16,7 @@ import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private const val CACHE_BYTES = 4 * 1024 * 1024
+private const val CACHE_BYTES = 2 * 1024 * 1024
 
 private val iconCache = object : LruCache<String, Bitmap>(CACHE_BYTES) {
     override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
@@ -25,7 +25,8 @@ private val iconCache = object : LruCache<String, Bitmap>(CACHE_BYTES) {
 @Composable
 fun rememberAppIconPainter(packageName: String, sizePx: Int): BitmapPainter? {
     val ctx = LocalContext.current
-    val cacheKey = remember(packageName, sizePx) { "$packageName@$sizePx" }
+    val effectiveSize = sizePx.coerceIn(48, 72)
+    val cacheKey = remember(packageName, effectiveSize) { "$packageName@$effectiveSize" }
     var painter by remember(cacheKey) {
         val cached = iconCache.get(cacheKey)
         mutableStateOf(cached?.let { BitmapPainter(it.asImageBitmap()) })
@@ -41,7 +42,7 @@ fun rememberAppIconPainter(packageName: String, sizePx: Int): BitmapPainter? {
                 pm.getDefaultActivityIcon()
             }.getOrNull() ?: return@withContext null
             val bm = runCatching {
-                drawable.toBitmap(width = sizePx, height = sizePx)
+                drawable.toBitmap(width = effectiveSize, height = effectiveSize)
             }.getOrNull() ?: return@withContext null
             iconCache.put(cacheKey, bm)
             bm

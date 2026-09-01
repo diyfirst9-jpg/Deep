@@ -1,10 +1,5 @@
 package com.firstt175.deepdrop.ui
 
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -23,28 +18,18 @@ object Routes {
     const val LOG_VIEWER = "log_viewer"
 }
 
-private const val ANIM_MS = 240
-
 @Composable
 fun LsfgNavHost(navController: NavHostController) {
+    // Keep navigation instant. Page-transition animations are visually nice,
+    // but they force both the outgoing and incoming Compose trees to be drawn
+    // at the same time. On mobile this creates avoidable GPU work and temporary
+    // allocations, especially when opening large settings pages.
     NavHost(
         navController = navController,
         startDestination = Routes.HOME,
-        enterTransition = {
-            slideInHorizontally(tween(ANIM_MS)) { it / 6 } + fadeIn(tween(ANIM_MS))
-        },
-        exitTransition = {
-            slideOutHorizontally(tween(ANIM_MS)) { -it / 6 } + fadeOut(tween(ANIM_MS))
-        },
-        popEnterTransition = {
-            slideInHorizontally(tween(ANIM_MS)) { -it / 6 } + fadeIn(tween(ANIM_MS))
-        },
-        popExitTransition = {
-            slideOutHorizontally(tween(ANIM_MS)) { it / 6 } + fadeOut(tween(ANIM_MS))
-        },
     ) {
         composable(Routes.HOME) { GameLauncherScreen(navController) }
-        composable(Routes.SETTINGS) { HomeScreen(navController) }
+        composable(Routes.SETTINGS) { SettingsScreen(navController) }
         composable(Routes.LEGAL) { LegalScreen(navController) }
         composable(Routes.DLL) { DllPickerScreen(navController) }
         composable(Routes.OVERLAY_DISPLAY) { OverlayDisplayScreen(navController) }

@@ -165,51 +165,6 @@ endif()
 # -----------------------------------------------------------------------------
 find_library(log-lib log)
 
-# -----------------------------------------------------------------------------
-# upscale_sharpen.comp — CAS-lite post-process compute shader, compiled to
-# SPIR-V at configure/build time and embedded as a byte-array header so the
-# render loop can create the pipeline with no runtime asset I/O. Mirrors the
-# CAS post-process embedding approach already used for the Vulkan compute
-# color-grading stage.
-# -----------------------------------------------------------------------------
-find_program(GLSLC_EXE glslc
-    HINTS "$ENV{ANDROID_NDK_HOME}/shader-tools/${CMAKE_HOST_SYSTEM_NAME}-x86_64"
-          "${ANDROID_NDK}/shader-tools/${CMAKE_HOST_SYSTEM_NAME}-x86_64"
-)
-if(NOT GLSLC_EXE)
-    message(FATAL_ERROR "glslc not found under the NDK's shader-tools/ — required to build upscale_sharpen.comp")
-endif()
-
-set(UPSCALE_SHARPEN_SPV "${CMAKE_CURRENT_BINARY_DIR}/generated/upscale_sharpen.spv")
-set(UPSCALE_SHARPEN_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/upscale_sharpen_spv.h")
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-
-add_custom_command(
-    OUTPUT "${UPSCALE_SHARPEN_SPV}"
-    COMMAND "${GLSLC_EXE}" -O --target-env=vulkan1.1
-            -o "${UPSCALE_SHARPEN_SPV}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/upscale_sharpen.comp"
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/upscale_sharpen.comp"
-    COMMENT "Compiling upscale_sharpen.comp -> SPIR-V"
-    VERBATIM
-)
-
-# xxd-less byte embedding: CMake's own file(READ ... HEX) avoids depending on
-# a host xxd binary being on PATH (not guaranteed in every CI/dev environment).
-add_custom_command(
-    OUTPUT "${UPSCALE_SHARPEN_HEADER}"
-    COMMAND "${CMAKE_COMMAND}"
-            -DIN_FILE=${UPSCALE_SHARPEN_SPV}
-            -DOUT_FILE=${UPSCALE_SHARPEN_HEADER}
-            -DVAR_NAME=kUpscaleSharpenSpv
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedSpirv.cmake"
-    DEPENDS "${UPSCALE_SHARPEN_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/EmbedSpirv.cmake"
-    COMMENT "Embedding upscale_sharpen.spv as C header"
-    VERBATIM
-)
-
-add_custom_target(upscale_sharpen_shader DEPENDS "${UPSCALE_SHARPEN_HEADER}")
-
 add_library(lsfg-android SHARED
     lsfg_jni.cpp
     android_shader_loader.cpp
@@ -220,9 +175,6 @@ add_library(lsfg-android SHARED
     cpu_core_policy.cpp
     crash_reporter.cpp
 )
-
-add_dependencies(lsfg-android upscale_sharpen_shader)
-target_include_directories(lsfg-android PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 target_compile_definitions(lsfg-android PRIVATE
     $<$<BOOL:${LSFG_HAVE_NCNN}>:LSFG_HAVE_NCNN=1>

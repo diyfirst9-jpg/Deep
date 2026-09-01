@@ -1,11 +1,5 @@
 package com.firstt175.deepdrop.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -108,14 +102,12 @@ fun GamepadHintRow(hints: List<GamepadHint>, modifier: Modifier = Modifier) {
 @Composable
 fun BoxScope.GamepadHintOverlay(hints: List<GamepadHint>, modifier: Modifier = Modifier) {
     val gamepadConnected = rememberGamepadConnected()
-    AnimatedVisibility(
-        visible = gamepadConnected,
-        modifier = modifier
-            .align(Alignment.BottomCenter)
-            .padding(bottom = 18.dp),
-        enter = fadeIn(tween(220)) + slideInVertically(tween(220)) { it / 2 },
-        exit = fadeOut(tween(160)) + slideOutVertically(tween(160)) { it / 2 },
-    ) {
-        GamepadHintRow(hints)
+    if (gamepadConnected) {
+        GamepadHintRow(
+            hints = hints,
+            modifier = modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 18.dp),
+        )
     }
 }

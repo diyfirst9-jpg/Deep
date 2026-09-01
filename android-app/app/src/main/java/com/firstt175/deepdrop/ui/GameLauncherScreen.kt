@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
@@ -35,8 +34,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
@@ -67,9 +67,9 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.animation.Crossfade
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -92,7 +92,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
-import coil.compose.rememberAsyncImagePainter
 import com.firstt175.deepdrop.R
 import com.firstt175.deepdrop.prefs.LsfgPreferences
 import com.firstt175.deepdrop.session.AdbDisplayController
@@ -109,6 +108,7 @@ import com.firstt175.deepdrop.ui.components.GamepadHintOverlay
 import com.firstt175.deepdrop.ui.components.LsfgCard
 import com.firstt175.deepdrop.ui.components.LsfgLogoMark
 import com.firstt175.deepdrop.ui.components.LsfgSecondaryButton
+import com.firstt175.deepdrop.ui.rememberAppIconPainter
 import com.firstt175.deepdrop.ui.theme.LsfgPrimary
 import com.firstt175.deepdrop.ui.theme.LsfgStatusGood
 import com.firstt175.deepdrop.ui.theme.LsfgStatusWarn
@@ -120,36 +120,8 @@ import kotlinx.coroutines.withContext
 private data class LaunchableApp(
     val label: String,
     val packageName: String,
-    val icon: Drawable,
     val isGame: Boolean,
 )
-
-// Icons are only ever shown at 54-58dp in the launcher list/grid. Raw
-// adaptive-icon drawables from loadIcon() can rasterize much larger than
-// that (themed/adaptive layers are commonly 432x432 or more on modern
-// devices), and loadLaunchableApps() decodes one for every launchable app
-// on the device up front — with 150-300 apps installed that's tens to
-// low hundreds of MB of bitmap memory held for the app's whole lifetime.
-// Downsampling each icon to a small fixed size here cuts that by roughly
-// an order of magnitude with no visible quality loss at launcher-tile size.
-private const val ICON_CACHE_PX = 128
-
-private fun Drawable.toDownsampledBitmapDrawable(context: Context): Drawable {
-    val bitmap = try {
-        android.graphics.Bitmap.createBitmap(
-            ICON_CACHE_PX,
-            ICON_CACHE_PX,
-            android.graphics.Bitmap.Config.ARGB_8888,
-        ).also { bmp ->
-            val canvas = android.graphics.Canvas(bmp)
-            setBounds(0, 0, ICON_CACHE_PX, ICON_CACHE_PX)
-            draw(canvas)
-        }
-    } catch (_: Throwable) {
-        return this
-    }
-    return android.graphics.drawable.BitmapDrawable(context.resources, bitmap)
-}
 
 // android:appCategory="game" in the manifest is what ApplicationInfo.category
 // reports, but most sideloaded/indie game APKs (like the one visible in the
@@ -168,7 +140,7 @@ private fun looksLikeGame(ai: ApplicationInfo): Boolean {
 private fun loadLaunchableApps(context: Context): List<LaunchableApp> {
     val pm = context.packageManager
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-    return pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+    return pm.queryIntentActivities(intent, 0)
         .asSequence()
         .mapNotNull { info ->
             val ai = info.activityInfo?.applicationInfo ?: return@mapNotNull null
@@ -176,7 +148,6 @@ private fun loadLaunchableApps(context: Context): List<LaunchableApp> {
             LaunchableApp(
                 label = ai.loadLabel(pm).toString().ifBlank { ai.packageName },
                 packageName = ai.packageName,
-                icon = ai.loadIcon(pm).toDownsampledBitmapDrawable(context),
                 isGame = looksLikeGame(ai),
             )
         }
@@ -317,9 +288,8 @@ fun GameLauncherScreen(nav: NavHostController) {
         }
     }
 
-    // loadLaunchableApps() queries every launcher activity and decodes an icon
-    // for each one — real work, not instant. Running it on Dispatchers.IO
-    // keeps the UI thread free while it happens.
+    // Package discovery runs off the main thread. Icons are deliberately not
+    // decoded here; the lazy list requests only the thumbnails that are visible.
     suspend fun refresh() {
         apps = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
     }
@@ -344,7 +314,7 @@ fun GameLauncherScreen(nav: NavHostController) {
 
     // remember(apps) so the filter only re-runs when the app list actually
     // changes (refresh), not on every recomposition triggered by showAll.
-    val games = remember(apps) { apps.filter { it.isGame } }
+    val games by remember { derivedStateOf { apps.filter { it.isGame } } }
 
     // Requesting focus here (rather than on some inner element) is what lets
     // onPreviewKeyEvent below see L1/R1 regardless of which row/tile in the
@@ -457,29 +427,33 @@ fun GameLauncherScreen(nav: NavHostController) {
                 )
             }
 
-            // Crossfade keyed on showAll: the "Games"/"All apps" chips swap the
-            // entire list content instantly otherwise, which reads as a jarring
-            // flash rather than a tab change.
-            Crossfade(targetState = showAll, label = "launcherList") { all ->
-                val listForTab = if (all) apps else games
-                if (listForTab.isEmpty()) {
-                    Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Filled.Apps, null, Modifier.size(54.dp), tint = LsfgStatusWarn)
-                            Spacer(Modifier.height(12.dp))
-                            Text(stringResource(R.string.empty_no_apps_title), fontWeight = FontWeight.Bold)
-                        }
+            // No crossfade: only one list is composed at a time. This keeps
+            // the old and new launcher trees from being rendered together.
+            val listForTab = if (showAll) apps else games
+            if (listForTab.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Filled.Apps, null, Modifier.size(54.dp), tint = LsfgStatusWarn)
+                        Spacer(Modifier.height(12.dp))
+                        Text(stringResource(R.string.empty_no_apps_title), fontWeight = FontWeight.Bold)
                     }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        items(listForTab, key = { it.packageName }) { app ->
-                            LauncherAppRow(nav = nav, app = app) {
-                                scope.launch { launchApp(app) }
-                            }
+                }
+            } else {
+                // One-column phone layout, two-or-more columns on wide/landscape
+                // displays. Adaptive columns keep cards reachable without
+                // hard-coding a portrait/landscape branch and only compose
+                // visible items. A 420dp minimum preserves comfortable touch
+                // targets while giving landscape phones a console-like layout.
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 420.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    gridItems(listForTab, key = { it.packageName }) { app ->
+                        LauncherAppRow(nav = nav, app = app) {
+                            scope.launch { launchApp(app) }
                         }
                     }
                 }
@@ -544,13 +518,25 @@ private fun LauncherAppRow(
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = rememberAsyncImagePainter(app.icon),
-                contentDescription = null,
-                modifier = Modifier
-                    .size(54.dp)
-                    .clip(RoundedCornerShape(13.dp)),
-            )
+            val iconPainter = rememberAppIconPainter(app.packageName, 64)
+            if (iconPainter != null) {
+                Image(
+                    painter = iconPainter,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(RoundedCornerShape(13.dp)),
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(RoundedCornerShape(13.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.Apps, contentDescription = null, modifier = Modifier.size(26.dp))
+                }
+            }
             Spacer(Modifier.width(13.dp))
             Column(Modifier.weight(1f)) {
                 Text(app.label, fontWeight = FontWeight.SemiBold)

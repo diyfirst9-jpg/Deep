@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -193,82 +192,67 @@ fun AutomaticOverlayScreen(nav: NavHostController) {
 
         Spacer(Modifier.height(12.dp))
 
-        // A plain `when` here swaps the whole loading/empty/list block in a
-        // single frame — visible as a hard flash while scrolling states.
-        // Crossfade keeps the transition on-screen for a beat instead, at
-        // the cost of a single small state int (no new dependencies).
-        val contentState = remember(loading, filtered) {
-            when {
-                loading -> 0
-                filtered.isEmpty() -> 1
-                else -> 2
+        // Compose only the current state. Keeping the outgoing and incoming
+        // trees alive for a crossfade wastes GPU time and transient memory.
+        when {
+            loading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = LsfgPrimary)
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "Loading installed apps…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
-        }
-        Crossfade(targetState = contentState, label = "autoOverlayContent") { state ->
-            when (state) {
-                0 -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = LsfgPrimary)
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = "Loading installed apps…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+            filtered.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconBadge(
+                            icon = Icons.Filled.SearchOff,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            size = 56.dp,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "No apps match \"$query\"",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
-                1 -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            IconBadge(
-                                icon = Icons.Filled.SearchOff,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                size = 56.dp,
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = "No apps match \"$query\"",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        // Keyed by packageName only (not index): a stable key lets
-                        // Compose reuse/animate existing rows across search/filter
-                        // changes instead of tearing down and rebuilding every row
-                        // whenever an item's position shifts.
-                        items(filtered, key = { it.packageName }) { app ->
-                            val isEnabled = enabled.contains(app.packageName)
-                            AutoAppRow(
-                                app = app,
-                                enabled = isEnabled,
-                                onToggle = { newValue ->
-                                    if (newValue) {
-                                        if (!enabled.contains(app.packageName)) enabled.add(app.packageName)
-                                    } else {
-                                        enabled.remove(app.packageName)
-                                    }
-                                    val updated = enabled.toSet()
-                                    prefs.setAutoEnabledApps(updated)
-                                    refreshConfigState(prefs)
-                                    AutoOverlayController.onAutoEnabledAppsChanged(ctx, updated)
-                                },
-                            )
-                        }
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    items(filtered, key = { it.packageName }) { app ->
+                        val isEnabled = enabled.contains(app.packageName)
+                        AutoAppRow(
+                            app = app,
+                            enabled = isEnabled,
+                            onToggle = { newValue ->
+                                if (newValue) {
+                                    if (!enabled.contains(app.packageName)) enabled.add(app.packageName)
+                                } else {
+                                    enabled.remove(app.packageName)
+                                }
+                                val updated = enabled.toSet()
+                                prefs.setAutoEnabledApps(updated)
+                                refreshConfigState(prefs)
+                                AutoOverlayController.onAutoEnabledAppsChanged(ctx, updated)
+                            },
+                        )
                     }
                 }
             }

@@ -226,19 +226,6 @@ object NativeBridge {
 
 
     /**
-     * Toggle the CAS-lite compute upscale-sharpen pass fused into the
-     * scaled-output blit stage (see UpscaleSharpen in lsfg_render_loop.cpp).
-     * Only takes effect when the output is actually scaled (renderResolutionScale
-     * < 1.0) and the device/surface support STORAGE_BIT swapchain images — a
-     * no-op otherwise, so it's always safe to flip. Safe to call from any
-     * thread; read lock-free on the render loop's hot path.
-     */
-    external fun setUpscaleSharpenEnabled(enabled: Boolean)
-
-    /** Sharpen strength, 0..1. Clamped natively. Default 0.35. */
-    external fun setUpscaleSharpenAmount(amount: Float)
-
-    /**
      * Hot-apply pacing parameters to the running render loop without tearing
      * down the Vulkan context. Safe to call from any thread; all values are
      * stored atomically and picked up on the next pacing iteration.
