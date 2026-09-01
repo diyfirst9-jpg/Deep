@@ -309,10 +309,9 @@ struct State {
     // a pair must be published before that pair's current REAL frame.
     std::condition_variable genDoneCv;
     uint64_t genCompletedEpoch = 0;
-    // The render worker pins itself to the little (efficiency) cluster only,
-    // permanently — see workerThread(). The FPS-lock contention controller
-    // below is the only thing that widens this to all online cores, and only
-    // while actively trying to slow a source app down toward a target fps.
+    // The render worker starts on the performance/big cluster.
+    // CPU-heavy preparation stays away from the GPU workload.
+    // The policy may widen to all online cores when CPU parallelism is needed.
     CpuCorePolicy cpuPolicy{};
     std::atomic<uint64_t> generatedFrames{0};
     // Counts every successful post (WSI present) to the overlay.
@@ -366,7 +365,8 @@ struct State {
     std::atomic<int64_t> shizukuPacingJitterNs{0};
 
     // --- Dynamic framegen bypass ------------------------------------------------
-    // The capture queue is never trimmed and real frames are never dropped.
+    // Realtime queue policy: old generation work is disposable.
+    // Keep the newest frame to avoid latency accumulation.
     // Generation is treated as optional work: when measured generation cost plus
     // queued work would push latency beyond the current capture cadence, the
     // current real frame is passed through and generation is skipped for that
@@ -1733,6 +1733,12 @@ bool runAiInterpolate(int oldSlot, int newSlot, uint32_t w, uint32_t h) {
     // wants the total segment count (extra + 1).
     const int totalMult = g.multiplier + 1;
 
+    // AI inference is intentionally CPU-only. Widen the worker from the
+    // initial big-core mask to the full online CPU topology so ncnn's
+    // OpenMP workers can use both big and little cores. LSFG's Vulkan
+    // frame-generation path is the only compute stage left on the GPU.
+    g.cpuPolicy.useAllCores();
+
     // g.flowScale was inverted at init time for LSFG's convention
     // (g.flowScale = 1/userFlow); both interpolators want the plain
     // user-facing 0..1 fraction back, so invert it again here. RIFE and
@@ -1905,13 +1911,15 @@ void genWorkerThread() {
 }
 
 void workerThread() {
-    // Pin every CPU-side operation in this hot thread to the little
-    // (efficiency) cluster and deliberately never schedule onto the
-    // big/performance cluster, even under CPU pressure. This is thread-local
+    // Start CPU-side hot-path work on the big/performance cluster. The
+    // CPU policy can widen this thread to all online CPUs when additional
+    // CPU parallelism is admitted; this avoids wasting the performance cores. This is thread-local
     // affinity; it does not require root and does not force unrelated
     // application threads onto any particular cluster.
-    if (!g.cpuPolicy.useLittleCores()) {
-        LOGW("workerThread: little-core affinity unavailable; leaving default affinity");
+    if (!g.cpuPolicy.usePerformanceCores()) {
+        LOGW("workerThread: performance-core affinity unavailable; leaving default affinity");
+    } else {
+        LOGI("workerThread: pinned to performance CPU cluster first");
     }
     // Elevate scheduling priority: this thread owns the capture→framegen→present
     // pipeline. There is no software VSync deadline or frame limiter here.
@@ -2560,21 +2568,18 @@ void workerThread() {
             const auto tFrameEnd = State::Clock::now();
             using ns = std::chrono::nanoseconds;
 
-            // Policy: stay on the little/efficiency cluster only. Unlike the
-            // previous big-cores-first policy, there is no overload escape
-            // hatch here — this worker (and ncnn's host-side threads) never
-            // schedule onto the big/performance cluster, even if the
-            // CPU-side portion of the frame exceeds the 60 Hz budget below.
-            // This is intentionally a one-way trade of headroom for staying
-            // off the big cluster; the number is only logged for visibility.
+            // CPU-first policy: this path is intentionally kept on the
+            // performance cluster. GPU is reserved for Vulkan LSFG work only.
+            // If the CPU path grows, the scheduler should use more CPU
+            // resources instead of falling back to LITTLE cores.
             const int64_t cpuHotPathNs =
                 std::chrono::duration_cast<ns>(tCopyDone - frameWorkStartedAt).count() +
                 std::chrono::duration_cast<ns>(tPresentDone - tCopyDone).count() +
                 blitWorkNsThisFrame;
             constexpr int64_t kCpuBudgetNs = 4'000'000;
             if (cpuHotPathNs > kCpuBudgetNs) {
-                LOGI("CPU scheduler: little-core CPU work over budget (%.2f ms); "
-                     "staying on little cores by policy",
+                LOGI("CPU scheduler: performance-core CPU work over budget (%.2f ms); "
+                     "keeping CPU-first pipeline",
                      cpuHotPathNs / 1'000'000.0);
             }
 
@@ -2737,10 +2742,10 @@ int initRenderLoop(const char *cacheDir, const RenderLoopConfig &cfg) {
         int rc;
         if (cfg.aiEngine == 1) {
             g.aiIfrnet = new IfrnetInterpolator();
-            rc = g.aiIfrnet->load(cfg.aiModelDir, true, /*vulkanDeviceIndex*/ -1, 1);
+            rc = g.aiIfrnet->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, g.cpuPolicy.allCpuCount());
         } else {
             g.ai = new NcnnInterpolator();
-            rc = g.ai->load(cfg.aiModelDir, true, /*vulkanDeviceIndex*/ -1, 1);
+            rc = g.ai->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, g.cpuPolicy.allCpuCount());
         }
         if (rc == kNcnnOk) {
             g.aiLoaded = true;

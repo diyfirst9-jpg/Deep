@@ -10,7 +10,6 @@
 
 #include <net.h>
 #include <mat.h>
-#include <gpu.h>
 #include <layer.h>
 
 #include <algorithm>
@@ -40,7 +39,7 @@ int round_up_to_multiple_of_32(int v) {
     return ((v + 31) / 32) * 32;
 }
 
-// GPU-only AI backend. No CPU ncnn::Net is constructed and no CPU/GPU
+// CPU-only AI backend. No CPU ncnn::Net is constructed and no CPU/GPU
 // work splitting or CPU affinity selection is performed here. ncnn's
 // num_threads value is kept at 1 only for unavoidable CPU-side utility/custom
 // layer work; model convolution/compute is Vulkan-backed.
@@ -53,12 +52,12 @@ int round_up_to_multiple_of_32(int v) {
 struct IfrnetInterpolator::Impl {
     // Only built (and only used) when load() was asked for GPU and a
     // Vulkan device was actually available.
-    ncnn::Net ifrnetGpu;
+    ncnn::Net ifrnetCpu;
 
-    // Tracks whether ifrnetGpu currently holds a successfully loaded
+    // Tracks whether ifrnetCpu currently holds a successfully loaded
     // model. Set true at the end of a successful load(), cleared by
     // unload() and checked by isLoaded()/interpolate().
-    bool gpuLoaded = false;
+    bool cpuLoaded = false;
 
 
     // Single IFRNet forward pass on a specific network: predicts the frame
@@ -136,9 +135,9 @@ int IfrnetInterpolator::load(const std::string &modelDir, bool allowGpu, int vul
         }
     }
 
-    (void)numThreads; // CPU thread count is controlled by the LITTLE-core-only policy.
-    ncnnCpuSetLittleOnly();
-    const int kUtilityThreads = ncnnCpuLittleThreadCount();
+    (void)allowGpu; (void)vulkanDeviceIndex; (void)numThreads; // CPU-only policy intentionally ignores GPU selection and thread caps.
+    ncnnCpuSetAllCores();
+    const int kUtilityThreads = ncnnCpuThreadCount();
 
     ncnn::Option baseOpt;
     baseOpt.num_threads = kUtilityThreads;
@@ -148,55 +147,35 @@ int IfrnetInterpolator::load(const std::string &modelDir, bool allowGpu, int vul
     baseOpt.use_winograd_convolution = false;
     baseOpt.use_sgemm_convolution = true;
 
-    // GPU-only path. Do NOT construct a CPU ncnn::Net: the AI backend
-    // is intentionally Vulkan-only on Android so inference cannot silently
-    // fall back to the CPU when Vulkan initialization fails.
-    if (!allowGpu) {
-        LOGE("GPU-only IFRNet backend requested but Vulkan compute is disabled");
+    // CPU-only inference. Keep Vulkan compute disabled so this AI backend
+    // cannot consume the GPU that is reserved for LSFG frame generation.
+    baseOpt.use_vulkan_compute = false;
+    impl_->ifrnetCpu.opt = baseOpt;
+    impl_->ifrnetCpu.register_custom_layer("ifrnet.Warp", ifrnet_warp_layer_creator);
+
+    if (impl_->ifrnetCpu.load_param(ifrnetParam.c_str()) != 0 ||
+        impl_->ifrnetCpu.load_model(ifrnetBin.c_str()) != 0) {
+        LOGE("CPU-only IFRNet model load failed from %s", modelDir.c_str());
+        impl_->ifrnetCpu.clear();
         return kNcnnErrLoadFailed;
     }
+    impl_->cpuLoaded = true;
 
-    const int gpuCount = ncnn::get_gpu_count();
-    if (gpuCount <= 0) {
-        LOGE("GPU-only IFRNet backend: ncnn reports no Vulkan GPU devices");
-        return kNcnnErrLoadFailed;
-    }
-
-    ncnn::Option gpuOpt = baseOpt;
-    gpuOpt.use_vulkan_compute = true;
-    impl_->ifrnetGpu.opt = gpuOpt;
-    const int dev = vulkanDeviceIndex >= 0 ? vulkanDeviceIndex : 0;
-    if (dev >= gpuCount) {
-        LOGE("GPU-only IFRNet backend: Vulkan device index %d out of range (count=%d)", dev, gpuCount);
-        impl_->ifrnetGpu.clear();
-        return kNcnnErrLoadFailed;
-    }
-    impl_->ifrnetGpu.set_vulkan_device(dev);
-    impl_->ifrnetGpu.register_custom_layer("ifrnet.Warp", ifrnet_warp_layer_creator);
-
-    if (impl_->ifrnetGpu.load_param(ifrnetParam.c_str()) != 0 ||
-        impl_->ifrnetGpu.load_model(ifrnetBin.c_str()) != 0) {
-        LOGE("GPU-only IFRNet model load failed from %s", modelDir.c_str());
-        impl_->ifrnetGpu.clear();
-        return kNcnnErrLoadFailed;
-    }
-    impl_->gpuLoaded = true;
-
-    LOGI("ncnn IFRNet model loaded from %s (mode=%s, bigCoreThreads=%d, allCoreThreads=%d, winograd=%s)", modelDir.c_str(),
-         "GPU-only", ncnnCpuLittleThreadCount(), ncnnCpuLittleThreadCount(), "off");
+    LOGI("ncnn IFRNet model loaded from %s (mode=CPU-only, threads=%d, Vulkan=off)",
+         modelDir.c_str(), ncnnCpuThreadCount());
     return kNcnnOk;
 }
 
 void IfrnetInterpolator::unload() {
     std::lock_guard<std::recursive_mutex> gpuLock(gpuLoadMutex());
-    if (impl_->gpuLoaded) {
-        impl_->ifrnetGpu.clear();
-        impl_->gpuLoaded = false;
+    if (impl_->cpuLoaded) {
+        impl_->ifrnetCpu.clear();
+        impl_->cpuLoaded = false;
     }
 }
 
 bool IfrnetInterpolator::isLoaded() const {
-    return impl_->gpuLoaded;
+    return impl_->cpuLoaded;
 }
 
 
@@ -204,7 +183,7 @@ int IfrnetInterpolator::interpolate(const uint8_t *frameA, const uint8_t *frameC
                                      int width, int height,
                                      uint8_t **outFrames, int multiplier,
                                      float /*flowScale — unused, see header*/) {
-    if (!impl_->gpuLoaded) {
+    if (!impl_->cpuLoaded) {
         return kNcnnErrNotLoaded;
     }
     if (width <= 0 || height <= 0 || multiplier < 2 || multiplier > 8 ||
@@ -241,17 +220,17 @@ int IfrnetInterpolator::interpolate(const uint8_t *frameA, const uint8_t *frameC
     normalizeAndPad(fullA, aPadded);
     normalizeAndPad(fullC, cPadded);
 
-    // GPU-only inference. Every interpolation pass goes through the
+    // CPU-only inference. Every interpolation pass goes through the
     // Vulkan-backed ncnn network; there is deliberately no CPU fallback.
-    if (!impl_->gpuLoaded) {
+    if (!impl_->cpuLoaded) {
         return kNcnnErrNotLoaded;
     }
     for (int k = 1; k < multiplier; k++) {
-        int rc = Impl::predictOne(impl_->ifrnetGpu, aPadded, cPadded,
+        int rc = Impl::predictOne(impl_->ifrnetCpu, aPadded, cPadded,
                                    wPadded, hPadded, width, height,
                                    k, multiplier, outFrames);
         if (rc != kNcnnOk) {
-            LOGE("GPU-only IFRNet inference failed rc=%d", rc);
+            LOGE("CPU-only IFRNet inference failed rc=%d", rc);
             return rc;
         }
     }

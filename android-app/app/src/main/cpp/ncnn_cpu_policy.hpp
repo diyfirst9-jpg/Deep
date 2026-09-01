@@ -2,10 +2,11 @@
 
 namespace lsfg_android {
 
-// ncnn's Android CPU scheduler. Vulkan model layers remain GPU-only; these
-// functions only control unavoidable host-side preprocessing/OpenMP/custom
-// layer work. Start on big cores and widen to all cores on overload.
-void ncnnCpuSetLittleOnly();
-int ncnnCpuLittleThreadCount();
+// CPU-only ncnn policy. All online CPUs are available, with Android's
+// scheduler free to place threads on the highest-capacity cores first.
+// This is deliberately not LITTLE-only: CPU work is used to keep Vulkan/GPU
+// compute reserved for the dedicated LSFG frame-generation pipeline.
+void ncnnCpuSetAllCores();
+int ncnnCpuThreadCount();
 
 } // namespace lsfg_android

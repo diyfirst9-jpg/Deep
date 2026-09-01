@@ -33,34 +33,47 @@ CpuCorePolicy::CpuCorePolicy() {
     const int count = configured > 0 ? static_cast<int>(configured) : 1;
 
     uint64_t maxMetric = 0;
-    uint64_t minMetric = UINT64_MAX;
-    int minMetricCpu = -1;
+    int maxMetricCpu = -1;
     for (int cpu = 0; cpu < count; ++cpu) {
         if (!cpuOnline(cpu)) continue;
         allCpus_.push_back(cpu);
+
         uint64_t metric = 0;
-        if (readCpuMetric(cpu, metric)) {
-            maxMetric = std::max(maxMetric, metric);
-            if (metric < minMetric) { minMetric = metric; minMetricCpu = cpu; }
+        if (readCpuMetric(cpu, metric) && metric > maxMetric) {
+            maxMetric = metric;
+            maxMetricCpu = cpu;
         }
     }
     if (allCpus_.empty()) return;
 
-    // Background-only policy: select LITTLE/E-cores, never the top-capacity
-    // performance cores. Prefer sched capacity, then cpufreq frequency.
-    for (int cpu : allCpus_) {
-        uint64_t metric = 0;
-        if (readCpuMetric(cpu, metric) && maxMetric > 0 &&
-            metric * 100 < maxMetric * 90) {
-            littleCpus_.push_back(cpu);
+    // Android exposes heterogeneous CPUs as clusters with different
+    // capacity/frequency. Treat CPUs within 90% of the fastest CPU as the
+    // performance/big cluster. The rest are efficiency/little CPUs.
+    //
+    // IMPORTANT: sched_setaffinity() is a mask, not an execution order.
+    // "Big first" therefore means that latency-sensitive work starts with a
+    // performance-core-only mask and can explicitly widen to all CPUs later.
+    if (maxMetric > 0) {
+        for (int cpu : allCpus_) {
+            uint64_t metric = 0;
+            if (readCpuMetric(cpu, metric) && metric * 100 >= maxMetric * 90) {
+                performanceCpus_.push_back(cpu);
+            } else {
+                littleCpus_.push_back(cpu);
+            }
         }
     }
 
-    // If the device exposes no heterogeneous topology, do NOT fall back to
-    // every CPU. Use the single lowest-capacity CPU as the conservative choice.
-    if (littleCpus_.empty() && minMetricCpu >= 0)
-        littleCpus_.push_back(minMetricCpu);
-
+    // If topology metrics are unavailable, prefer every CPU rather than
+    // incorrectly forcing a workload onto an arbitrary LITTLE core.
+    if (performanceCpus_.empty()) {
+        if (maxMetricCpu >= 0) performanceCpus_.push_back(maxMetricCpu);
+        else performanceCpus_ = allCpus_;
+    }
+    if (littleCpus_.empty()) {
+        // Homogeneous CPUs: all cores are effectively performance cores.
+        // Keep littleCpus_ empty so callers can distinguish this case.
+    }
 }
 
 bool CpuCorePolicy::readCpuMetric(int cpu, uint64_t &metric) {
@@ -90,8 +103,8 @@ bool CpuCorePolicy::apply(const std::vector<int> &cpus) {
     return sched_setaffinity(0, sizeof(set), &set) == 0;
 }
 
-bool CpuCorePolicy::useLittleCores() {
-    return apply(littleCpus_);
+bool CpuCorePolicy::usePerformanceCores() {
+    return apply(performanceCpus_);
 }
 
 bool CpuCorePolicy::useAllCores() {
