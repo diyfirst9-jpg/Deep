@@ -9,7 +9,6 @@
 
 #include <net.h>
 #include <mat.h>
-#include <gpu.h>
 #include <layer.h>
 
 #include <algorithm>
@@ -49,7 +48,7 @@ int round_up_to_multiple_of_32(int v) {
     return ((v + 31) / 32) * 32;
 }
 
-// GPU-only AI backend. No CPU ncnn::Net is constructed and no CPU/GPU
+// CPU-only AI backend. No CPU ncnn::Net is constructed and no CPU/GPU
 // work splitting or CPU affinity selection is performed here. ncnn's
 // num_threads value is kept at 1 only for unavoidable CPU-side utility/custom
 // layer work; model convolution/compute is Vulkan-backed.
@@ -62,12 +61,12 @@ int round_up_to_multiple_of_32(int v) {
 struct NcnnInterpolator::Impl {
     // Only built (and only used) when load() was asked for GPU and a
     // Vulkan device was actually available.
-    ncnn::Net flownetGpu;
+    ncnn::Net flownetCpu;
 
-    // Tracks whether flownetGpu currently holds a successfully loaded
+    // Tracks whether flownetCpu currently holds a successfully loaded
     // model. Set true at the end of a successful load(), cleared by
     // unload() and checked by isLoaded()/interpolate().
-    bool gpuLoaded = false;
+    bool cpuLoaded = false;
 
 
     // Single RIFE forward pass on a specific network: predicts the frame
@@ -141,9 +140,9 @@ int NcnnInterpolator::load(const std::string &modelDir, bool allowGpu, int vulka
         }
     }
 
-    (void)numThreads; // CPU thread count is controlled by the LITTLE-core-only policy.
-    ncnnCpuSetLittleOnly();
-    const int kUtilityThreads = ncnnCpuLittleThreadCount();
+    (void)allowGpu; (void)vulkanDeviceIndex; (void)numThreads; // CPU-only policy intentionally ignores GPU selection and thread caps.
+    ncnnCpuSetAllCores();
+    const int kUtilityThreads = ncnnCpuThreadCount();
 
     ncnn::Option baseOpt;
     baseOpt.num_threads = kUtilityThreads;
@@ -159,55 +158,36 @@ int NcnnInterpolator::load(const std::string &modelDir, bool allowGpu, int vulka
     baseOpt.use_winograd_convolution = false;
     baseOpt.use_sgemm_convolution = true;
 
-    // GPU-only path. Do NOT construct a CPU ncnn::Net: the AI backend
-    // is intentionally Vulkan-only on Android so inference cannot silently
-    // fall back to the CPU when Vulkan initialization fails.
-    if (!allowGpu) {
-        LOGE("GPU-only RIFE backend requested but Vulkan compute is disabled");
+    // CPU-only inference. This is intentional: the Vulkan GPU is reserved
+    // for the dedicated LSFG frame-generation path. ncnn still uses its
+    // optimized OpenMP/NEON kernels across the full CPU topology.
+    baseOpt.use_vulkan_compute = false;
+    impl_->flownetCpu.opt = baseOpt;
+    impl_->flownetCpu.register_custom_layer("rife.Warp", rife_warp_layer_creator);
+
+    if (impl_->flownetCpu.load_param(flowParam.c_str()) != 0 ||
+        impl_->flownetCpu.load_model(flowBin.c_str()) != 0) {
+        LOGE("CPU-only RIFE model load failed from %s", modelDir.c_str());
+        impl_->flownetCpu.clear();
         return kNcnnErrLoadFailed;
     }
+    impl_->cpuLoaded = true;
 
-    const int gpuCount = ncnn::get_gpu_count();
-    if (gpuCount <= 0) {
-        LOGE("GPU-only RIFE backend: ncnn reports no Vulkan GPU devices");
-        return kNcnnErrLoadFailed;
-    }
-
-    ncnn::Option gpuOpt = baseOpt;
-    gpuOpt.use_vulkan_compute = true;
-    impl_->flownetGpu.opt = gpuOpt;
-    const int dev = vulkanDeviceIndex >= 0 ? vulkanDeviceIndex : 0;
-    if (dev >= gpuCount) {
-        LOGE("GPU-only RIFE backend: Vulkan device index %d out of range (count=%d)", dev, gpuCount);
-        impl_->flownetGpu.clear();
-        return kNcnnErrLoadFailed;
-    }
-    impl_->flownetGpu.set_vulkan_device(dev);
-    impl_->flownetGpu.register_custom_layer("rife.Warp", rife_warp_layer_creator);
-
-    if (impl_->flownetGpu.load_param(flowParam.c_str()) != 0 ||
-        impl_->flownetGpu.load_model(flowBin.c_str()) != 0) {
-        LOGE("GPU-only RIFE model load failed from %s", modelDir.c_str());
-        impl_->flownetGpu.clear();
-        return kNcnnErrLoadFailed;
-    }
-    impl_->gpuLoaded = true;
-
-    LOGI("ncnn RIFE model loaded from %s (mode=%s, littleCoreThreads=%d, winograd=%s)", modelDir.c_str(),
-         "GPU-only", ncnnCpuLittleThreadCount(), "off");
+    LOGI("ncnn RIFE model loaded from %s (mode=CPU-only, threads=%d, Vulkan=off)",
+         modelDir.c_str(), ncnnCpuThreadCount());
     return kNcnnOk;
 }
 
 void NcnnInterpolator::unload() {
     std::lock_guard<std::recursive_mutex> gpuLock(gpuLoadMutex());
-    if (impl_->gpuLoaded) {
-        impl_->flownetGpu.clear();
-        impl_->gpuLoaded = false;
+    if (impl_->cpuLoaded) {
+        impl_->flownetCpu.clear();
+        impl_->cpuLoaded = false;
     }
 }
 
 bool NcnnInterpolator::isLoaded() const {
-    return impl_->gpuLoaded;
+    return impl_->cpuLoaded;
 }
 
 
@@ -215,7 +195,7 @@ int NcnnInterpolator::interpolate(const uint8_t *frameA, const uint8_t *frameC,
                                    int width, int height,
                                    uint8_t **outFrames, int multiplier,
                                    float /*flowScale — unused, see header*/) {
-    if (!impl_->gpuLoaded) {
+    if (!impl_->cpuLoaded) {
         return kNcnnErrNotLoaded;
     }
     if (width <= 0 || height <= 0 || multiplier < 2 || multiplier > 8 ||
@@ -251,17 +231,17 @@ int NcnnInterpolator::interpolate(const uint8_t *frameA, const uint8_t *frameC,
     normalizeAndPad(fullA, aPadded);
     normalizeAndPad(fullC, cPadded);
 
-    // GPU-only inference. Every interpolation pass goes through the
+    // CPU-only inference. Every interpolation pass goes through the
     // Vulkan-backed ncnn network; there is deliberately no CPU fallback.
-    if (!impl_->gpuLoaded) {
+    if (!impl_->cpuLoaded) {
         return kNcnnErrNotLoaded;
     }
     for (int k = 1; k < multiplier; k++) {
-        int rc = Impl::predictOne(impl_->flownetGpu, aPadded, cPadded,
+        int rc = Impl::predictOne(impl_->flownetCpu, aPadded, cPadded,
                                    wPadded, hPadded, width, height,
                                    k, multiplier, outFrames);
         if (rc != kNcnnOk) {
-            LOGE("GPU-only RIFE inference failed rc=%d", rc);
+            LOGE("CPU-only RIFE inference failed rc=%d", rc);
             return rc;
         }
     }

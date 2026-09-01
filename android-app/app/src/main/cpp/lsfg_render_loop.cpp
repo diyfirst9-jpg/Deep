@@ -1733,6 +1733,12 @@ bool runAiInterpolate(int oldSlot, int newSlot, uint32_t w, uint32_t h) {
     // wants the total segment count (extra + 1).
     const int totalMult = g.multiplier + 1;
 
+    // AI inference is intentionally CPU-only. Widen the worker from the
+    // initial big-core mask to the full online CPU topology so ncnn's
+    // OpenMP workers can use both big and little cores. LSFG's Vulkan
+    // frame-generation path is the only compute stage left on the GPU.
+    g.cpuPolicy.useAllCores();
+
     // g.flowScale was inverted at init time for LSFG's convention
     // (g.flowScale = 1/userFlow); both interpolators want the plain
     // user-facing 0..1 fraction back, so invert it again here. RIFE and
@@ -1905,12 +1911,12 @@ void genWorkerThread() {
 }
 
 void workerThread() {
-    // Pin every CPU-side operation in this hot thread to the little
-    // (efficiency) cluster and deliberately never schedule onto the
-    // big/performance cluster, even under CPU pressure. This is thread-local
+    // Start CPU-side hot-path work on the big/performance cluster. The
+    // CPU policy can widen this thread to all online CPUs when additional
+    // CPU parallelism is admitted; this avoids wasting the performance cores. This is thread-local
     // affinity; it does not require root and does not force unrelated
     // application threads onto any particular cluster.
-    if (!g.cpuPolicy.useLittleCores()) {
+    if (!g.cpuPolicy.usePerformanceCores()) {
         LOGW("workerThread: little-core affinity unavailable; leaving default affinity");
     }
     // Elevate scheduling priority: this thread owns the capture→framegen→present
@@ -2737,10 +2743,10 @@ int initRenderLoop(const char *cacheDir, const RenderLoopConfig &cfg) {
         int rc;
         if (cfg.aiEngine == 1) {
             g.aiIfrnet = new IfrnetInterpolator();
-            rc = g.aiIfrnet->load(cfg.aiModelDir, true, /*vulkanDeviceIndex*/ -1, 1);
+            rc = g.aiIfrnet->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, g.cpuPolicy.allCpuCount());
         } else {
             g.ai = new NcnnInterpolator();
-            rc = g.ai->load(cfg.aiModelDir, true, /*vulkanDeviceIndex*/ -1, 1);
+            rc = g.ai->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, g.cpuPolicy.allCpuCount());
         }
         if (rc == kNcnnOk) {
             g.aiLoaded = true;

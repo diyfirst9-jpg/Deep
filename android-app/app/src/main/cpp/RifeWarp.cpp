@@ -2,6 +2,7 @@
 
 #include <gpu.h>
 #include <pipeline.h>
+#include <cmath>
 
 namespace lsfg_android {
 namespace {
@@ -70,6 +71,7 @@ RifeWarp::RifeWarp()
 int RifeWarp::create_pipeline(const ncnn::Option& opt)
 {
 #if NCNN_VULKAN
+    if (!opt.use_vulkan_compute) return 0;
     if (!vkdev) return -1;
     std::vector<uint32_t> spirv;
     if (ncnn::compile_spirv_module(kWarpComp, (int)sizeof(kWarpComp) - 1, opt, spirv) != 0)
@@ -99,12 +101,50 @@ int RifeWarp::destroy_pipeline(const ncnn::Option& opt)
     return 0;
 }
 
-int RifeWarp::forward(const std::vector<ncnn::Mat>&,
-                      std::vector<ncnn::Mat>&,
-                      const ncnn::Option&) const
+int RifeWarp::forward(const std::vector<ncnn::Mat>& bottom_blobs,
+                      std::vector<ncnn::Mat>& top_blobs,
+                      const ncnn::Option& opt) const
 {
-    // Hard GPU-only policy: never execute this layer on CPU.
-    return -1001;
+    if (bottom_blobs.size() < 2 || top_blobs.empty()) return -1001;
+    const ncnn::Mat& image = bottom_blobs[0];
+    const ncnn::Mat& flow  = bottom_blobs[1];
+    ncnn::Mat& top = top_blobs[0];
+
+    top.create(image.w, image.h, image.c, image.elemsize, image.elempack, opt.blob_allocator);
+    if (top.empty() || flow.c < 2) return -100;
+
+    // CPU equivalent of the Vulkan warp: bilinear sample image at (x+flow_x,
+    // y+flow_y). ncnn's CPU path uses float storage here, so this stays fully
+    // on CPU and is parallelized by ncnn's surrounding execution.
+    for (int q = 0; q < image.c; ++q) {
+        const float* src = image.channel(q);
+        float* dst = top.channel(q);
+        const float* fx = flow.channel(0);
+        const float* fy = flow.channel(1);
+        #pragma omp parallel for schedule(static)
+        for (int y = 0; y < image.h; ++y) {
+            for (int x = 0; x < image.w; ++x) {
+                const int i = y * image.w + x;
+                const float sx = x + fx[i];
+                const float sy = y + fy[i];
+                const int x0raw = static_cast<int>(std::floor(sx));
+                const int y0raw = static_cast<int>(std::floor(sy));
+                const int x0 = std::max(0, std::min(image.w - 1, x0raw));
+                const int y0 = std::max(0, std::min(image.h - 1, y0raw));
+                const int x1 = std::max(0, std::min(image.w - 1, x0raw + 1));
+                const int y1 = std::max(0, std::min(image.h - 1, y0raw + 1));
+                const float a = sx - x0;
+                const float b = sy - y0;
+                const float v0 = src[y0 * image.w + x0];
+                const float v1 = src[y0 * image.w + x1];
+                const float v2 = src[y1 * image.w + x0];
+                const float v3 = src[y1 * image.w + x1];
+                dst[i] = (v0 * (1.f - a) + v1 * a) * (1.f - b)
+                       + (v2 * (1.f - a) + v3 * a) * b;
+            }
+        }
+    }
+    return 0;
 }
 
 #if NCNN_VULKAN
