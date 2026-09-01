@@ -172,7 +172,6 @@ add_library(lsfg-android SHARED
     android_vk_session.cpp
     ahb_image_bridge.cpp
     lsfg_render_loop.cpp
-    cpu_core_policy.cpp
     crash_reporter.cpp
 )
 

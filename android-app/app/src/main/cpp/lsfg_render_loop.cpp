@@ -45,7 +45,6 @@
 #endif
 
 #include "crash_reporter.hpp"
-#include "cpu_core_policy.hpp"
 #ifdef LSFG_HAVE_NCNN
 #include "ncnn_cpu_policy.hpp"
 #endif
@@ -58,6 +57,11 @@
 namespace lsfg_android {
 
 namespace {
+
+static int availableCpuThreads() {
+    const long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? static_cast<int>(n) : 1;
+}
 
 struct State {
     using Clock = std::chrono::steady_clock;
@@ -309,10 +313,8 @@ struct State {
     // a pair must be published before that pair's current REAL frame.
     std::condition_variable genDoneCv;
     uint64_t genCompletedEpoch = 0;
-    // The render worker starts on the performance/big cluster.
-    // CPU-heavy preparation stays away from the GPU workload.
-    // The policy may widen to all online cores when CPU parallelism is needed.
-    CpuCorePolicy cpuPolicy{};
+    // CPU work is not pinned to a specific core/cluster. Android's scheduler
+    // is free to place this thread on any CPU allowed to the app.
     std::atomic<uint64_t> generatedFrames{0};
     // Counts every successful post (WSI present) to the overlay.
     // This is the ground-truth "frames on screen" metric — includes real
@@ -1733,11 +1735,8 @@ bool runAiInterpolate(int oldSlot, int newSlot, uint32_t w, uint32_t h) {
     // wants the total segment count (extra + 1).
     const int totalMult = g.multiplier + 1;
 
-    // AI inference is intentionally CPU-only. Widen the worker from the
-    // initial big-core mask to the full online CPU topology so ncnn's
-    // OpenMP workers can use both big and little cores. LSFG's Vulkan
-    // frame-generation path is the only compute stage left on the GPU.
-    g.cpuPolicy.useAllCores();
+    // AI inference is CPU-side where applicable, and no CPU affinity is
+    // imposed here. The OS scheduler may use any available CPU/core.
 
     // g.flowScale was inverted at init time for LSFG's convention
     // (g.flowScale = 1/userFlow); both interpolators want the plain
@@ -1911,16 +1910,8 @@ void genWorkerThread() {
 }
 
 void workerThread() {
-    // Start CPU-side hot-path work on the big/performance cluster. The
-    // CPU policy can widen this thread to all online CPUs when additional
-    // CPU parallelism is admitted; this avoids wasting the performance cores. This is thread-local
-    // affinity; it does not require root and does not force unrelated
-    // application threads onto any particular cluster.
-    if (!g.cpuPolicy.usePerformanceCores()) {
-        LOGW("workerThread: performance-core affinity unavailable; leaving default affinity");
-    } else {
-        LOGI("workerThread: pinned to performance CPU cluster first");
-    }
+    // No CPU affinity/pinning: keep the worker schedulable on every CPU
+    // allowed to this process. Android's scheduler handles placement.
     // Elevate scheduling priority: this thread owns the capture→framegen→present
     // pipeline. There is no software VSync deadline or frame limiter here.
     //
@@ -2742,10 +2733,10 @@ int initRenderLoop(const char *cacheDir, const RenderLoopConfig &cfg) {
         int rc;
         if (cfg.aiEngine == 1) {
             g.aiIfrnet = new IfrnetInterpolator();
-            rc = g.aiIfrnet->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, g.cpuPolicy.allCpuCount());
+            rc = g.aiIfrnet->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, availableCpuThreads());
         } else {
             g.ai = new NcnnInterpolator();
-            rc = g.ai->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, g.cpuPolicy.allCpuCount());
+            rc = g.ai->load(cfg.aiModelDir, false, /*vulkanDeviceIndex*/ -1, availableCpuThreads());
         }
         if (rc == kNcnnOk) {
             g.aiLoaded = true;
